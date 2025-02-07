@@ -1,5 +1,7 @@
 # Python bindings for web-audio-api-rs
 
+https://pypi.org/project/web-audio-api/
+
 ## Local development
 
 ```bash
@@ -21,5 +23,5 @@ ctx = web_audio_api.AudioContext()
 osc = web_audio_api.OscillatorNode(ctx)
 osc.connect(ctx.destination())
 osc.start()
-osc.frequency().set_value(300)
+osc.frequency().value = 300
 ```
