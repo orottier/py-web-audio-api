@@ -802,14 +802,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "py-web-audio-api"
-version = "0.1.0"
-dependencies = [
- "pyo3",
- "web-audio-api",
-]
-
-[[package]]
 name = "pyo3"
 version = "0.21.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1371,6 +1363,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a05d73b933a847d6cccdda8f838a22ff101ad9bf93e33684f39c1f5f0eece3d"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "web-audio-api"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "web-audio-api 1.2.0",
 ]
 
 [[package]]
