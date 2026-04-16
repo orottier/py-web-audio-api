@@ -3,7 +3,7 @@ use pyo3::types::{PyDict, PyDictMethods};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use web_audio_api_rs::context::BaseAudioContext;
+use web_audio_api_rs::context::BaseAudioContext as RsBaseAudioContext;
 use web_audio_api_rs::node::{AudioNode as RsAudioNode, AudioScheduledSourceNode as _};
 use web_audio_api_rs::AutomationRate;
 
@@ -60,224 +60,259 @@ impl AudioBuffer {
     }
 }
 
-#[pyclass]
-struct AudioContext(web_audio_api_rs::context::AudioContext);
+enum BaseAudioContextInner {
+    Realtime(Arc<Mutex<web_audio_api_rs::context::AudioContext>>),
+    Offline(Arc<Mutex<web_audio_api_rs::context::OfflineAudioContext>>),
+}
+
+#[pyclass(subclass)]
+struct BaseAudioContext {
+    inner: BaseAudioContextInner,
+}
+
+impl BaseAudioContext {
+    fn new(inner: BaseAudioContextInner) -> Self {
+        Self { inner }
+    }
+}
+
+fn new_realtime_context() -> web_audio_api_rs::context::AudioContext {
+    web_audio_api_rs::context::AudioContext::new(web_audio_api_rs::context::AudioContextOptions {
+        sink_id: "none".into(),
+        ..Default::default()
+    })
+}
+
+#[pymethods]
+impl BaseAudioContext {
+    #[getter]
+    fn destination(&self) -> AudioNode {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => destination_node(&*ctx.lock().unwrap()),
+            BaseAudioContextInner::Offline(ctx) => destination_node(&*ctx.lock().unwrap()),
+        }
+    }
+
+    #[getter(sampleRate)]
+    fn sample_rate(&self) -> f32 {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => ctx.lock().unwrap().sample_rate(),
+            BaseAudioContextInner::Offline(ctx) => ctx.lock().unwrap().sample_rate(),
+        }
+    }
+
+    #[getter(currentTime)]
+    fn current_time(&self) -> f64 {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => ctx.lock().unwrap().current_time(),
+            BaseAudioContextInner::Offline(ctx) => ctx.lock().unwrap().current_time(),
+        }
+    }
+
+    #[pyo3(name = "createBuffer")]
+    fn create_buffer(
+        &self,
+        number_of_channels: usize,
+        length: usize,
+        sample_rate: f32,
+    ) -> AudioBuffer {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => AudioBuffer(ctx.lock().unwrap().create_buffer(
+                number_of_channels,
+                length,
+                sample_rate,
+            )),
+            BaseAudioContextInner::Offline(ctx) => AudioBuffer(ctx.lock().unwrap().create_buffer(
+                number_of_channels,
+                length,
+                sample_rate,
+            )),
+        }
+    }
+
+    #[pyo3(name = "createOscillator")]
+    fn create_oscillator(&self, py: Python<'_>) -> PyResult<Py<OscillatorNode>> {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => oscillator_node_py(py, &*ctx.lock().unwrap()),
+            BaseAudioContextInner::Offline(ctx) => oscillator_node_py(py, &*ctx.lock().unwrap()),
+        }
+    }
+
+    #[pyo3(name = "createConstantSource")]
+    fn create_constant_source(&self, py: Python<'_>) -> PyResult<Py<ConstantSourceNode>> {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => constant_source_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::ConstantSourceOptions::default(),
+            ),
+            BaseAudioContextInner::Offline(ctx) => constant_source_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::ConstantSourceOptions::default(),
+            ),
+        }
+    }
+
+    #[pyo3(name = "createBufferSource")]
+    fn create_buffer_source(&self, py: Python<'_>) -> PyResult<Py<AudioBufferSourceNode>> {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => audio_buffer_source_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::AudioBufferSourceOptions::default(),
+            ),
+            BaseAudioContextInner::Offline(ctx) => audio_buffer_source_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::AudioBufferSourceOptions::default(),
+            ),
+        }
+    }
+
+    #[pyo3(name = "createGain")]
+    fn create_gain(&self, py: Python<'_>) -> PyResult<Py<GainNode>> {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => gain_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::GainOptions::default(),
+            ),
+            BaseAudioContextInner::Offline(ctx) => gain_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::GainOptions::default(),
+            ),
+        }
+    }
+
+    #[pyo3(name = "createDelay", signature = (max_delay_time=1.0))]
+    fn create_delay(&self, py: Python<'_>, max_delay_time: f64) -> PyResult<Py<DelayNode>> {
+        let options = web_audio_api_rs::node::DelayOptions {
+            max_delay_time,
+            ..Default::default()
+        };
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => {
+                delay_node_py(py, &*ctx.lock().unwrap(), options)
+            }
+            BaseAudioContextInner::Offline(ctx) => {
+                delay_node_py(py, &*ctx.lock().unwrap(), options)
+            }
+        }
+    }
+
+    #[pyo3(name = "createStereoPanner")]
+    fn create_stereo_panner(&self, py: Python<'_>) -> PyResult<Py<StereoPannerNode>> {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => stereo_panner_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::StereoPannerOptions::default(),
+            ),
+            BaseAudioContextInner::Offline(ctx) => stereo_panner_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::StereoPannerOptions::default(),
+            ),
+        }
+    }
+
+    #[pyo3(name = "createChannelMerger", signature = (number_of_inputs=6))]
+    fn create_channel_merger(
+        &self,
+        py: Python<'_>,
+        number_of_inputs: usize,
+    ) -> PyResult<Py<ChannelMergerNode>> {
+        let options = web_audio_api_rs::node::ChannelMergerOptions {
+            number_of_inputs,
+            ..Default::default()
+        };
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => {
+                channel_merger_node_py(py, &*ctx.lock().unwrap(), options)
+            }
+            BaseAudioContextInner::Offline(ctx) => {
+                channel_merger_node_py(py, &*ctx.lock().unwrap(), options)
+            }
+        }
+    }
+
+    #[pyo3(name = "createChannelSplitter", signature = (number_of_outputs=6))]
+    fn create_channel_splitter(
+        &self,
+        py: Python<'_>,
+        number_of_outputs: usize,
+    ) -> PyResult<Py<ChannelSplitterNode>> {
+        let options = web_audio_api_rs::node::ChannelSplitterOptions {
+            number_of_outputs,
+            ..Default::default()
+        };
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => {
+                channel_splitter_node_py(py, &*ctx.lock().unwrap(), options)
+            }
+            BaseAudioContextInner::Offline(ctx) => {
+                channel_splitter_node_py(py, &*ctx.lock().unwrap(), options)
+            }
+        }
+    }
+
+    #[pyo3(name = "createBiquadFilter")]
+    fn create_biquad_filter(&self, py: Python<'_>) -> PyResult<Py<BiquadFilterNode>> {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => biquad_filter_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::BiquadFilterOptions::default(),
+            ),
+            BaseAudioContextInner::Offline(ctx) => biquad_filter_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::BiquadFilterOptions::default(),
+            ),
+        }
+    }
+}
+
+#[pyclass(extends = BaseAudioContext)]
+struct AudioContext(Arc<Mutex<web_audio_api_rs::context::AudioContext>>);
 
 #[pymethods]
 impl AudioContext {
     #[new]
-    fn new() -> Self {
-        Self(Default::default())
-    }
-
-    #[getter]
-    fn destination(&self) -> AudioNode {
-        destination_node(&self.0)
-    }
-
-    #[pyo3(name = "createOscillator")]
-    fn create_oscillator(&self, py: Python<'_>) -> PyResult<Py<OscillatorNode>> {
-        oscillator_node_py(py, &self.0)
-    }
-
-    #[pyo3(name = "createConstantSource")]
-    fn create_constant_source(&self, py: Python<'_>) -> PyResult<Py<ConstantSourceNode>> {
-        constant_source_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::ConstantSourceOptions::default(),
-        )
-    }
-
-    #[pyo3(name = "createBufferSource")]
-    fn create_buffer_source(&self, py: Python<'_>) -> PyResult<Py<AudioBufferSourceNode>> {
-        audio_buffer_source_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::AudioBufferSourceOptions::default(),
-        )
-    }
-
-    #[pyo3(name = "createGain")]
-    fn create_gain(&self, py: Python<'_>) -> PyResult<Py<GainNode>> {
-        gain_node_py(py, &self.0, web_audio_api_rs::node::GainOptions::default())
-    }
-
-    #[pyo3(name = "createDelay", signature = (max_delay_time=1.0))]
-    fn create_delay(&self, py: Python<'_>, max_delay_time: f64) -> PyResult<Py<DelayNode>> {
-        delay_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::DelayOptions {
-                max_delay_time,
-                ..Default::default()
-            },
-        )
-    }
-
-    #[pyo3(name = "createStereoPanner")]
-    fn create_stereo_panner(&self, py: Python<'_>) -> PyResult<Py<StereoPannerNode>> {
-        stereo_panner_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::StereoPannerOptions::default(),
-        )
-    }
-
-    #[pyo3(name = "createChannelMerger", signature = (number_of_inputs=6))]
-    fn create_channel_merger(
-        &self,
-        py: Python<'_>,
-        number_of_inputs: usize,
-    ) -> PyResult<Py<ChannelMergerNode>> {
-        channel_merger_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::ChannelMergerOptions {
-                number_of_inputs,
-                ..Default::default()
-            },
-        )
-    }
-
-    #[pyo3(name = "createChannelSplitter", signature = (number_of_outputs=6))]
-    fn create_channel_splitter(
-        &self,
-        py: Python<'_>,
-        number_of_outputs: usize,
-    ) -> PyResult<Py<ChannelSplitterNode>> {
-        channel_splitter_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::ChannelSplitterOptions {
-                number_of_outputs,
-                ..Default::default()
-            },
-        )
-    }
-
-    #[pyo3(name = "createBiquadFilter")]
-    fn create_biquad_filter(&self, py: Python<'_>) -> PyResult<Py<BiquadFilterNode>> {
-        biquad_filter_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::BiquadFilterOptions::default(),
-        )
+    fn new() -> PyClassInitializer<Self> {
+        let ctx = Arc::new(Mutex::new(new_realtime_context()));
+        PyClassInitializer::from(BaseAudioContext::new(BaseAudioContextInner::Realtime(
+            Arc::clone(&ctx),
+        )))
+        .add_subclass(Self(ctx))
     }
 }
 
-#[pyclass]
-struct OfflineAudioContext(web_audio_api_rs::context::OfflineAudioContext);
+#[pyclass(extends = BaseAudioContext)]
+struct OfflineAudioContext(Arc<Mutex<web_audio_api_rs::context::OfflineAudioContext>>);
 
 #[pymethods]
 impl OfflineAudioContext {
     #[new]
-    fn new(number_of_channels: usize, length: usize, sample_rate: f32) -> Self {
-        Self(web_audio_api_rs::context::OfflineAudioContext::new(
-            number_of_channels,
-            length,
-            sample_rate,
-        ))
-    }
-
-    #[getter]
-    fn destination(&self) -> AudioNode {
-        destination_node(&self.0)
-    }
-
-    #[pyo3(name = "createOscillator")]
-    fn create_oscillator(&self, py: Python<'_>) -> PyResult<Py<OscillatorNode>> {
-        oscillator_node_py(py, &self.0)
-    }
-
-    #[pyo3(name = "createConstantSource")]
-    fn create_constant_source(&self, py: Python<'_>) -> PyResult<Py<ConstantSourceNode>> {
-        constant_source_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::ConstantSourceOptions::default(),
-        )
-    }
-
-    #[pyo3(name = "createBufferSource")]
-    fn create_buffer_source(&self, py: Python<'_>) -> PyResult<Py<AudioBufferSourceNode>> {
-        audio_buffer_source_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::AudioBufferSourceOptions::default(),
-        )
-    }
-
-    #[pyo3(name = "createGain")]
-    fn create_gain(&self, py: Python<'_>) -> PyResult<Py<GainNode>> {
-        gain_node_py(py, &self.0, web_audio_api_rs::node::GainOptions::default())
-    }
-
-    #[pyo3(name = "createDelay", signature = (max_delay_time=1.0))]
-    fn create_delay(&self, py: Python<'_>, max_delay_time: f64) -> PyResult<Py<DelayNode>> {
-        delay_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::DelayOptions {
-                max_delay_time,
-                ..Default::default()
-            },
-        )
-    }
-
-    #[pyo3(name = "createStereoPanner")]
-    fn create_stereo_panner(&self, py: Python<'_>) -> PyResult<Py<StereoPannerNode>> {
-        stereo_panner_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::StereoPannerOptions::default(),
-        )
-    }
-
-    #[pyo3(name = "createChannelMerger", signature = (number_of_inputs=6))]
-    fn create_channel_merger(
-        &self,
-        py: Python<'_>,
-        number_of_inputs: usize,
-    ) -> PyResult<Py<ChannelMergerNode>> {
-        channel_merger_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::ChannelMergerOptions {
-                number_of_inputs,
-                ..Default::default()
-            },
-        )
-    }
-
-    #[pyo3(name = "createChannelSplitter", signature = (number_of_outputs=6))]
-    fn create_channel_splitter(
-        &self,
-        py: Python<'_>,
-        number_of_outputs: usize,
-    ) -> PyResult<Py<ChannelSplitterNode>> {
-        channel_splitter_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::ChannelSplitterOptions {
-                number_of_outputs,
-                ..Default::default()
-            },
-        )
-    }
-
-    #[pyo3(name = "createBiquadFilter")]
-    fn create_biquad_filter(&self, py: Python<'_>) -> PyResult<Py<BiquadFilterNode>> {
-        biquad_filter_node_py(
-            py,
-            &self.0,
-            web_audio_api_rs::node::BiquadFilterOptions::default(),
-        )
+    fn new(number_of_channels: usize, length: usize, sample_rate: f32) -> PyClassInitializer<Self> {
+        let ctx = Arc::new(Mutex::new(
+            web_audio_api_rs::context::OfflineAudioContext::new(
+                number_of_channels,
+                length,
+                sample_rate,
+            ),
+        ));
+        PyClassInitializer::from(BaseAudioContext::new(BaseAudioContextInner::Offline(
+            Arc::clone(&ctx),
+        )))
+        .add_subclass(Self(ctx))
     }
 
     #[pyo3(name = "startRendering")]
-    fn start_rendering(&mut self) -> PyResult<AudioBuffer> {
-        catch_web_audio_panic_result(|| AudioBuffer(self.0.start_rendering_sync()))
+    fn start_rendering(&self) -> PyResult<AudioBuffer> {
+        catch_web_audio_panic_result(|| AudioBuffer(self.0.lock().unwrap().start_rendering_sync()))
     }
 }
 
@@ -369,7 +404,7 @@ fn catch_web_audio_panic_result<T>(f: impl FnOnce() -> T) -> PyResult<T> {
     })
 }
 
-fn destination_node(ctx: &impl BaseAudioContext) -> AudioNode {
+fn destination_node(ctx: &impl RsBaseAudioContext) -> AudioNode {
     let dest = ctx.destination();
     let node = Arc::new(Mutex::new(dest)) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
     AudioNode(node)
@@ -440,7 +475,7 @@ impl ScheduledSourceInner {
 }
 
 fn audio_buffer_source_node_parts(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AudioBufferSourceOptions,
 ) -> (AudioBufferSourceNode, AudioScheduledSourceNode, AudioNode) {
     let node = web_audio_api_rs::node::AudioBufferSourceNode::new(ctx, options);
@@ -454,7 +489,7 @@ fn audio_buffer_source_node_parts(
 }
 
 fn audio_buffer_source_node(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AudioBufferSourceOptions,
 ) -> PyClassInitializer<AudioBufferSourceNode> {
     let (node, scheduled, base) = audio_buffer_source_node_parts(ctx, options);
@@ -465,14 +500,14 @@ fn audio_buffer_source_node(
 
 fn audio_buffer_source_node_py(
     py: Python<'_>,
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AudioBufferSourceOptions,
 ) -> PyResult<Py<AudioBufferSourceNode>> {
     Py::new(py, audio_buffer_source_node(ctx, options))
 }
 
 fn gain_node_parts(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::GainOptions,
 ) -> (GainNode, AudioNode) {
     let node = web_audio_api_rs::node::GainNode::new(ctx, options);
@@ -482,7 +517,7 @@ fn gain_node_parts(
 }
 
 fn gain_node(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::GainOptions,
 ) -> PyClassInitializer<GainNode> {
     let (node, base) = gain_node_parts(ctx, options);
@@ -491,14 +526,14 @@ fn gain_node(
 
 fn gain_node_py(
     py: Python<'_>,
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::GainOptions,
 ) -> PyResult<Py<GainNode>> {
     Py::new(py, gain_node(ctx, options))
 }
 
 fn delay_node_parts(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::DelayOptions,
 ) -> (DelayNode, AudioNode) {
     let node = web_audio_api_rs::node::DelayNode::new(ctx, options);
@@ -508,7 +543,7 @@ fn delay_node_parts(
 }
 
 fn delay_node(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::DelayOptions,
 ) -> PyClassInitializer<DelayNode> {
     let (node, base) = delay_node_parts(ctx, options);
@@ -517,14 +552,14 @@ fn delay_node(
 
 fn delay_node_py(
     py: Python<'_>,
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::DelayOptions,
 ) -> PyResult<Py<DelayNode>> {
     Py::new(py, delay_node(ctx, options))
 }
 
 fn stereo_panner_node_parts(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::StereoPannerOptions,
 ) -> (StereoPannerNode, AudioNode) {
     let node = web_audio_api_rs::node::StereoPannerNode::new(ctx, options);
@@ -534,7 +569,7 @@ fn stereo_panner_node_parts(
 }
 
 fn stereo_panner_node(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::StereoPannerOptions,
 ) -> PyClassInitializer<StereoPannerNode> {
     let (node, base) = stereo_panner_node_parts(ctx, options);
@@ -543,14 +578,14 @@ fn stereo_panner_node(
 
 fn stereo_panner_node_py(
     py: Python<'_>,
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::StereoPannerOptions,
 ) -> PyResult<Py<StereoPannerNode>> {
     Py::new(py, stereo_panner_node(ctx, options))
 }
 
 fn channel_merger_node_parts(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelMergerOptions,
 ) -> (ChannelMergerNode, AudioNode) {
     let node = web_audio_api_rs::node::ChannelMergerNode::new(ctx, options);
@@ -560,7 +595,7 @@ fn channel_merger_node_parts(
 }
 
 fn channel_merger_node(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelMergerOptions,
 ) -> PyClassInitializer<ChannelMergerNode> {
     let (node, base) = channel_merger_node_parts(ctx, options);
@@ -569,14 +604,14 @@ fn channel_merger_node(
 
 fn channel_merger_node_py(
     py: Python<'_>,
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelMergerOptions,
 ) -> PyResult<Py<ChannelMergerNode>> {
     Py::new(py, channel_merger_node(ctx, options))
 }
 
 fn channel_splitter_node_parts(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelSplitterOptions,
 ) -> (ChannelSplitterNode, AudioNode) {
     let node = web_audio_api_rs::node::ChannelSplitterNode::new(ctx, options);
@@ -586,7 +621,7 @@ fn channel_splitter_node_parts(
 }
 
 fn channel_splitter_node(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelSplitterOptions,
 ) -> PyClassInitializer<ChannelSplitterNode> {
     let (node, base) = channel_splitter_node_parts(ctx, options);
@@ -595,14 +630,14 @@ fn channel_splitter_node(
 
 fn channel_splitter_node_py(
     py: Python<'_>,
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelSplitterOptions,
 ) -> PyResult<Py<ChannelSplitterNode>> {
     Py::new(py, channel_splitter_node(ctx, options))
 }
 
 fn biquad_filter_node_parts(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::BiquadFilterOptions,
 ) -> (BiquadFilterNode, AudioNode) {
     let node = web_audio_api_rs::node::BiquadFilterNode::new(ctx, options);
@@ -612,7 +647,7 @@ fn biquad_filter_node_parts(
 }
 
 fn biquad_filter_node(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::BiquadFilterOptions,
 ) -> PyClassInitializer<BiquadFilterNode> {
     let (node, base) = biquad_filter_node_parts(ctx, options);
@@ -621,14 +656,14 @@ fn biquad_filter_node(
 
 fn biquad_filter_node_py(
     py: Python<'_>,
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::BiquadFilterOptions,
 ) -> PyResult<Py<BiquadFilterNode>> {
     Py::new(py, biquad_filter_node(ctx, options))
 }
 
 fn oscillator_node_parts(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
 ) -> (OscillatorNode, AudioScheduledSourceNode, AudioNode) {
     let osc = ctx.create_oscillator();
     let node = Arc::new(Mutex::new(osc));
@@ -640,19 +675,22 @@ fn oscillator_node_parts(
     )
 }
 
-fn oscillator_node(ctx: &impl BaseAudioContext) -> PyClassInitializer<OscillatorNode> {
+fn oscillator_node(ctx: &impl RsBaseAudioContext) -> PyClassInitializer<OscillatorNode> {
     let (osc, scheduled, base) = oscillator_node_parts(ctx);
     PyClassInitializer::from(base)
         .add_subclass(scheduled)
         .add_subclass(osc)
 }
 
-fn oscillator_node_py(py: Python<'_>, ctx: &impl BaseAudioContext) -> PyResult<Py<OscillatorNode>> {
+fn oscillator_node_py(
+    py: Python<'_>,
+    ctx: &impl RsBaseAudioContext,
+) -> PyResult<Py<OscillatorNode>> {
     Py::new(py, oscillator_node(ctx))
 }
 
 fn constant_source_node_parts(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ConstantSourceOptions,
 ) -> (ConstantSourceNode, AudioScheduledSourceNode, AudioNode) {
     let node = web_audio_api_rs::node::ConstantSourceNode::new(ctx, options);
@@ -666,7 +704,7 @@ fn constant_source_node_parts(
 }
 
 fn constant_source_node(
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ConstantSourceOptions,
 ) -> PyClassInitializer<ConstantSourceNode> {
     let (node, scheduled, base) = constant_source_node_parts(ctx, options);
@@ -677,7 +715,7 @@ fn constant_source_node(
 
 fn constant_source_node_py(
     py: Python<'_>,
-    ctx: &impl BaseAudioContext,
+    ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ConstantSourceOptions,
 ) -> PyResult<Py<ConstantSourceNode>> {
     Py::new(py, constant_source_node(ctx, options))
@@ -1109,11 +1147,11 @@ impl AudioBufferSourceNode {
         let options = audio_buffer_source_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(audio_buffer_source_node(&ctx.0, options));
+            return Ok(audio_buffer_source_node(&*ctx.0.lock().unwrap(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(audio_buffer_source_node(&ctx.0, options));
+            return Ok(audio_buffer_source_node(&*ctx.0.lock().unwrap(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1206,11 +1244,11 @@ impl GainNode {
         let options = gain_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(gain_node(&ctx.0, options));
+            return Ok(gain_node(&*ctx.0.lock().unwrap(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(gain_node(&ctx.0, options));
+            return Ok(gain_node(&*ctx.0.lock().unwrap(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1238,11 +1276,11 @@ impl DelayNode {
         let options = delay_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(delay_node(&ctx.0, options));
+            return Ok(delay_node(&*ctx.0.lock().unwrap(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(delay_node(&ctx.0, options));
+            return Ok(delay_node(&*ctx.0.lock().unwrap(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1270,11 +1308,11 @@ impl StereoPannerNode {
         let options = stereo_panner_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(stereo_panner_node(&ctx.0, options));
+            return Ok(stereo_panner_node(&*ctx.0.lock().unwrap(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(stereo_panner_node(&ctx.0, options));
+            return Ok(stereo_panner_node(&*ctx.0.lock().unwrap(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1303,11 +1341,11 @@ impl ChannelMergerNode {
         let options = channel_merger_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(channel_merger_node(&ctx.0, options));
+            return Ok(channel_merger_node(&*ctx.0.lock().unwrap(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(channel_merger_node(&ctx.0, options));
+            return Ok(channel_merger_node(&*ctx.0.lock().unwrap(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1331,11 +1369,11 @@ impl ChannelSplitterNode {
         let options = channel_splitter_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(channel_splitter_node(&ctx.0, options));
+            return Ok(channel_splitter_node(&*ctx.0.lock().unwrap(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(channel_splitter_node(&ctx.0, options));
+            return Ok(channel_splitter_node(&*ctx.0.lock().unwrap(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1358,11 +1396,11 @@ impl BiquadFilterNode {
         let options = biquad_filter_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(biquad_filter_node(&ctx.0, options));
+            return Ok(biquad_filter_node(&*ctx.0.lock().unwrap(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(biquad_filter_node(&ctx.0, options));
+            return Ok(biquad_filter_node(&*ctx.0.lock().unwrap(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1424,11 +1462,11 @@ impl OscillatorNode {
     #[new]
     fn new(ctx: &Bound<'_, PyAny>) -> PyResult<PyClassInitializer<Self>> {
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(oscillator_node(&ctx.0));
+            return Ok(oscillator_node(&*ctx.0.lock().unwrap()));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(oscillator_node(&ctx.0));
+            return Ok(oscillator_node(&*ctx.0.lock().unwrap()));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1472,11 +1510,11 @@ impl ConstantSourceNode {
         let options = constant_source_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(constant_source_node(&ctx.0, options));
+            return Ok(constant_source_node(&*ctx.0.lock().unwrap(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(constant_source_node(&ctx.0, options));
+            return Ok(constant_source_node(&*ctx.0.lock().unwrap(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1493,6 +1531,7 @@ impl ConstantSourceNode {
 /// A Python module implemented in Rust.
 #[pymodule]
 fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<BaseAudioContext>()?;
     m.add_class::<AudioContext>()?;
     m.add_class::<OfflineAudioContext>()?;
     m.add_class::<AudioBuffer>()?;
@@ -1517,11 +1556,53 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    fn audio_context_parts() -> (AudioContext, BaseAudioContext) {
+        let ctx = Arc::new(Mutex::new(new_realtime_context()));
+        (
+            AudioContext(Arc::clone(&ctx)),
+            BaseAudioContext::new(BaseAudioContextInner::Realtime(ctx)),
+        )
+    }
+
+    fn offline_context_parts(
+        number_of_channels: usize,
+        length: usize,
+        sample_rate: f32,
+    ) -> (OfflineAudioContext, BaseAudioContext) {
+        let ctx = Arc::new(Mutex::new(
+            web_audio_api_rs::context::OfflineAudioContext::new(
+                number_of_channels,
+                length,
+                sample_rate,
+            ),
+        ));
+        (
+            OfflineAudioContext(Arc::clone(&ctx)),
+            BaseAudioContext::new(BaseAudioContextInner::Offline(ctx)),
+        )
+    }
+
+    #[test]
+    fn base_audio_context_shared_surface_works() {
+        let (_, realtime) = audio_context_parts();
+        let (_, offline) = offline_context_parts(1, 128, 44_100.);
+
+        assert!(realtime.sample_rate() > 0.);
+        assert_eq!(offline.sample_rate(), 44_100.);
+        assert!(realtime.current_time() >= 0.0);
+        assert_eq!(offline.current_time(), 0.0);
+        assert_eq!(realtime.create_buffer(1, 16, 8_000.).length(), 16);
+        assert_eq!(offline.create_buffer(1, 16, 8_000.).length(), 16);
+
+        let _ = realtime.destination();
+        let _ = offline.destination();
+    }
+
     #[test]
     fn oscillator_graph_smoke_test() {
-        let ctx = OfflineAudioContext::new(1, 128, 44_100.);
-        let (osc, scheduled, osc_node) = oscillator_node_parts(&ctx.0);
-        let destination = ctx.destination();
+        let (ctx, base) = offline_context_parts(1, 128, 44_100.);
+        let (osc, scheduled, osc_node) = oscillator_node_parts(&*ctx.0.lock().unwrap());
+        let destination = base.destination();
 
         osc_node.connect(&destination).unwrap();
         osc.frequency().set_value(300.0).unwrap();
@@ -1537,8 +1618,8 @@ mod tests {
         let (tx, rx) = mpsc::channel();
 
         std::thread::spawn(move || {
-            let ctx = OfflineAudioContext::new(1, 128, 44_100.);
-            let (_, _, node) = oscillator_node_parts(&ctx.0);
+            let (ctx, _) = offline_context_parts(1, 128, 44_100.);
+            let (_, _, node) = oscillator_node_parts(&*ctx.0.lock().unwrap());
             let result = node
                 .connect(&node)
                 .is_err_and(|err| err.to_string().contains("input port 0 is out of bounds"));
@@ -1554,12 +1635,12 @@ mod tests {
 
     #[test]
     fn constant_source_graph_smoke_test() {
-        let ctx = OfflineAudioContext::new(1, 128, 44_100.);
+        let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (src, scheduled, src_node) = constant_source_node_parts(
-            &ctx.0,
+            &*ctx.0.lock().unwrap(),
             web_audio_api_rs::node::ConstantSourceOptions { offset: 2. },
         );
-        let destination = ctx.destination();
+        let destination = base.destination();
 
         src_node.connect(&destination).unwrap();
         assert_eq!(src.offset().value().unwrap(), 2.);
@@ -1570,20 +1651,20 @@ mod tests {
 
     #[test]
     fn audio_buffer_source_graph_smoke_test() {
-        let ctx = OfflineAudioContext::new(1, 128, 44_100.);
+        let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let buffer = web_audio_api_rs::AudioBuffer::new(web_audio_api_rs::AudioBufferOptions {
             number_of_channels: 1,
             length: 128,
             sample_rate: 44_100.,
         });
         let (src, scheduled, src_node) = audio_buffer_source_node_parts(
-            &ctx.0,
+            &*ctx.0.lock().unwrap(),
             web_audio_api_rs::node::AudioBufferSourceOptions {
                 buffer: Some(buffer),
                 ..Default::default()
             },
         );
-        let destination = ctx.destination();
+        let destination = base.destination();
 
         src_node.connect(&destination).unwrap();
         assert_eq!(src.playback_rate().value().unwrap(), 1.);
@@ -1595,15 +1676,15 @@ mod tests {
 
     #[test]
     fn gain_graph_smoke_test() {
-        let ctx = OfflineAudioContext::new(1, 128, 44_100.);
+        let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (gain, gain_node) = gain_node_parts(
-            &ctx.0,
+            &*ctx.0.lock().unwrap(),
             web_audio_api_rs::node::GainOptions {
                 gain: 0.5,
                 ..Default::default()
             },
         );
-        let destination = ctx.destination();
+        let destination = base.destination();
 
         gain_node.connect(&destination).unwrap();
         assert_eq!(gain.gain().value().unwrap(), 0.5);
@@ -1611,15 +1692,15 @@ mod tests {
 
     #[test]
     fn delay_graph_smoke_test() {
-        let ctx = OfflineAudioContext::new(1, 128, 44_100.);
+        let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (delay, delay_node) = delay_node_parts(
-            &ctx.0,
+            &*ctx.0.lock().unwrap(),
             web_audio_api_rs::node::DelayOptions {
                 delay_time: 0.25,
                 ..Default::default()
             },
         );
-        let destination = ctx.destination();
+        let destination = base.destination();
 
         delay_node.connect(&destination).unwrap();
         assert_eq!(delay.delay_time().value().unwrap(), 0.25);
@@ -1627,15 +1708,15 @@ mod tests {
 
     #[test]
     fn stereo_panner_graph_smoke_test() {
-        let ctx = OfflineAudioContext::new(2, 128, 44_100.);
+        let (ctx, base) = offline_context_parts(2, 128, 44_100.);
         let (panner, panner_node) = stereo_panner_node_parts(
-            &ctx.0,
+            &*ctx.0.lock().unwrap(),
             web_audio_api_rs::node::StereoPannerOptions {
                 pan: -0.5,
                 ..Default::default()
             },
         );
-        let destination = ctx.destination();
+        let destination = base.destination();
 
         panner_node.connect(&destination).unwrap();
         assert_eq!(panner.pan().value().unwrap(), -0.5);
@@ -1643,42 +1724,42 @@ mod tests {
 
     #[test]
     fn channel_merger_graph_smoke_test() {
-        let ctx = OfflineAudioContext::new(2, 128, 44_100.);
+        let (ctx, base) = offline_context_parts(2, 128, 44_100.);
         let (_, merger_node) = channel_merger_node_parts(
-            &ctx.0,
+            &*ctx.0.lock().unwrap(),
             web_audio_api_rs::node::ChannelMergerOptions {
                 number_of_inputs: 2,
                 ..Default::default()
             },
         );
-        let destination = ctx.destination();
+        let destination = base.destination();
 
         merger_node.connect(&destination).unwrap();
     }
 
     #[test]
     fn channel_splitter_graph_smoke_test() {
-        let ctx = OfflineAudioContext::new(2, 128, 44_100.);
+        let (ctx, base) = offline_context_parts(2, 128, 44_100.);
         let (_, splitter_node) = channel_splitter_node_parts(
-            &ctx.0,
+            &*ctx.0.lock().unwrap(),
             web_audio_api_rs::node::ChannelSplitterOptions {
                 number_of_outputs: 2,
                 ..Default::default()
             },
         );
-        let destination = ctx.destination();
+        let destination = base.destination();
 
         splitter_node.connect(&destination).unwrap();
     }
 
     #[test]
     fn biquad_filter_graph_smoke_test() {
-        let ctx = OfflineAudioContext::new(2, 128, 44_100.);
+        let (ctx, base) = offline_context_parts(2, 128, 44_100.);
         let (mut filter, filter_node) = biquad_filter_node_parts(
-            &ctx.0,
+            &*ctx.0.lock().unwrap(),
             web_audio_api_rs::node::BiquadFilterOptions::default(),
         );
-        let destination = ctx.destination();
+        let destination = base.destination();
 
         filter_node.connect(&destination).unwrap();
         filter.set_type("highpass").unwrap();

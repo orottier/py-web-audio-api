@@ -4,6 +4,43 @@ import web_audio_api
 
 
 class WebAudioApiSmokeTest(unittest.TestCase):
+    def test_base_audio_context_inheritance_and_shared_surface_work(self):
+        audio_ctx = web_audio_api.AudioContext()
+        offline_ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+
+        self.assertIsInstance(audio_ctx, web_audio_api.BaseAudioContext)
+        self.assertIsInstance(offline_ctx, web_audio_api.BaseAudioContext)
+        self.assertIsInstance(audio_ctx, web_audio_api.AudioContext)
+        self.assertIsInstance(offline_ctx, web_audio_api.OfflineAudioContext)
+
+        self.assertGreater(audio_ctx.sampleRate, 0.0)
+        self.assertEqual(offline_ctx.sampleRate, 44_100.0)
+        self.assertGreaterEqual(audio_ctx.currentTime, 0.0)
+        self.assertEqual(offline_ctx.currentTime, 0.0)
+
+        realtime_buffer = audio_ctx.createBuffer(1, 32, 8_000.0)
+        self.assertEqual(realtime_buffer.numberOfChannels, 1)
+        self.assertEqual(realtime_buffer.length, 32)
+        self.assertEqual(realtime_buffer.sampleRate, 8_000.0)
+
+        buffer = offline_ctx.createBuffer(1, 64, 8_000.0)
+        self.assertEqual(buffer.numberOfChannels, 1)
+        self.assertEqual(buffer.length, 64)
+        self.assertEqual(buffer.sampleRate, 8_000.0)
+
+        self.assertIsInstance(audio_ctx.createGain(), web_audio_api.GainNode)
+        self.assertIsInstance(offline_ctx.createGain(), web_audio_api.GainNode)
+        self.assertIsInstance(audio_ctx.destination, web_audio_api.AudioNode)
+        self.assertIsInstance(offline_ctx.destination, web_audio_api.AudioNode)
+
+    def test_base_audio_context_is_not_constructible(self):
+        with self.assertRaises(TypeError):
+            web_audio_api.BaseAudioContext()
+
+    def test_audio_context_does_not_expose_start_rendering(self):
+        ctx = web_audio_api.AudioContext()
+        self.assertFalse(hasattr(ctx, "startRendering"))
+
     def test_offline_oscillator_graph_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         osc = ctx.createOscillator()
