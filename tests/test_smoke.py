@@ -383,6 +383,34 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         panner.refDistance = 3.0
         self.assertEqual(panner.refDistance, 3.0)
 
+    def test_periodic_wave_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        wave = web_audio_api.PeriodicWave(
+            ctx,
+            {
+                "real": [0.0, 0.0, 0.0],
+                "imag": [0.0, 1.0, 0.5],
+                "disableNormalization": True,
+            },
+        )
+        osc = web_audio_api.OscillatorNode(ctx, {"periodicWave": wave})
+
+        self.assertIsInstance(wave, web_audio_api.PeriodicWave)
+        self.assertEqual(osc.type, "custom")
+
+    def test_create_periodic_wave_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        wave = ctx.createPeriodicWave(
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.5],
+            {"disableNormalization": False},
+        )
+        osc = ctx.createOscillator()
+        osc.setPeriodicWave(wave)
+
+        self.assertIsInstance(wave, web_audio_api.PeriodicWave)
+        self.assertEqual(osc.type, "custom")
+
     def test_audio_param_methods_work(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         osc = web_audio_api.OscillatorNode(ctx)

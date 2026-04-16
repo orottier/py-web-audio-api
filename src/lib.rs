@@ -18,6 +18,10 @@ static PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
 #[pyclass]
 struct AudioBuffer(web_audio_api_rs::AudioBuffer);
 
+#[pyclass(skip_from_py_object)]
+#[derive(Clone)]
+struct PeriodicWave(web_audio_api_rs::PeriodicWave);
+
 #[pymethods]
 impl AudioBuffer {
     #[new]
@@ -77,6 +81,33 @@ impl AudioBuffer {
             self.0
                 .copy_to_channel_with_offset(&source, channel_number, buffer_offset);
         })
+    }
+}
+
+#[pymethods]
+impl PeriodicWave {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(ctx: &Bound<'_, PyAny>, options: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let options = periodic_wave_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(Self(web_audio_api_rs::PeriodicWave::new(
+                &*ctx.0.lock().unwrap(),
+                options,
+            )));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(Self(web_audio_api_rs::PeriodicWave::new(
+                &*ctx.0.lock().unwrap(),
+                options,
+            )));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
     }
 }
 
@@ -311,6 +342,30 @@ impl BaseAudioContext {
             BaseAudioContextInner::Concrete(ctx) => {
                 panner_node_py(py, ctx, web_audio_api_rs::node::PannerOptions::default())
             }
+        }
+    }
+
+    #[pyo3(name = "createPeriodicWave", signature = (real, imag, constraints=None))]
+    fn create_periodic_wave(
+        &self,
+        real: Vec<f32>,
+        imag: Vec<f32>,
+        constraints: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PeriodicWave> {
+        let mut options = periodic_wave_constraints(constraints)?;
+        options.real = Some(real);
+        options.imag = Some(imag);
+
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => Ok(PeriodicWave(
+                web_audio_api_rs::PeriodicWave::new(&*ctx.lock().unwrap(), options),
+            )),
+            BaseAudioContextInner::Offline(ctx) => Ok(PeriodicWave(
+                web_audio_api_rs::PeriodicWave::new(&*ctx.lock().unwrap(), options),
+            )),
+            BaseAudioContextInner::Concrete(ctx) => Ok(PeriodicWave(
+                web_audio_api_rs::PeriodicWave::new(ctx, options),
+            )),
         }
     }
 
@@ -1957,10 +2012,15 @@ fn oscillator_options(
     if let Some(detune) = options.get_item("detune")? {
         parsed.detune = detune.extract()?;
     }
-    if options.get_item("periodicWave")?.is_some() {
-        return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-            "OscillatorOptions.periodicWave is not implemented yet",
-        ));
+    if let Some(periodic_wave) = options.get_item("periodicWave")? {
+        if !periodic_wave.is_none() {
+            parsed.periodic_wave = Some(
+                periodic_wave
+                    .extract::<PyRef<'_, PeriodicWave>>()?
+                    .0
+                    .clone(),
+            );
+        }
     }
 
     Ok(parsed)
@@ -2124,6 +2184,42 @@ fn panner_options(
     }
     if let Some(cone_outer_gain) = options.get_item("coneOuterGain")? {
         parsed.cone_outer_gain = cone_outer_gain.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn periodic_wave_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::PeriodicWaveOptions> {
+    let mut parsed = web_audio_api_rs::PeriodicWaveOptions::default();
+    let Some(options) = options_dict(options, "PeriodicWaveOptions")? else {
+        return Ok(parsed);
+    };
+
+    if let Some(real) = options.get_item("real")? {
+        parsed.real = Some(real.extract()?);
+    }
+    if let Some(imag) = options.get_item("imag")? {
+        parsed.imag = Some(imag.extract()?);
+    }
+    if let Some(disable_normalization) = options.get_item("disableNormalization")? {
+        parsed.disable_normalization = disable_normalization.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn periodic_wave_constraints(
+    constraints: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::PeriodicWaveOptions> {
+    let mut parsed = web_audio_api_rs::PeriodicWaveOptions::default();
+    let Some(constraints) = options_dict(constraints, "PeriodicWaveConstraints")? else {
+        return Ok(parsed);
+    };
+
+    if let Some(disable_normalization) = constraints.get_item("disableNormalization")? {
+        parsed.disable_normalization = disable_normalization.extract()?;
     }
 
     Ok(parsed)
@@ -3134,6 +3230,14 @@ impl OscillatorNode {
     fn detune(&self) -> AudioParam {
         AudioParam(self.0.lock().unwrap().detune().clone())
     }
+
+    #[pyo3(name = "setPeriodicWave")]
+    fn set_periodic_wave(&mut self, periodic_wave: PyRef<'_, PeriodicWave>) {
+        self.0
+            .lock()
+            .unwrap()
+            .set_periodic_wave(periodic_wave.0.clone());
+    }
 }
 
 #[pyclass(extends = AudioScheduledSourceNode)]
@@ -3175,6 +3279,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioContext>()?;
     m.add_class::<OfflineAudioContext>()?;
     m.add_class::<AudioBuffer>()?;
+    m.add_class::<PeriodicWave>()?;
     m.add_class::<AudioListener>()?;
     m.add_class::<AudioNode>()?;
     m.add_class::<AudioDestinationNode>()?;
@@ -3580,5 +3685,32 @@ mod tests {
         assert_eq!(panner.cone_inner_angle(), 90.0);
         assert_eq!(panner.cone_outer_angle(), 180.0);
         assert_eq!(panner.cone_outer_gain(), 0.25);
+    }
+
+    #[test]
+    fn periodic_wave_smoke_test() {
+        let (ctx, base) = offline_context_parts(1, 128, 44_100.);
+        let periodic_wave = PeriodicWave(web_audio_api_rs::PeriodicWave::new(
+            &*ctx.0.lock().unwrap(),
+            web_audio_api_rs::PeriodicWaveOptions {
+                real: Some(vec![0.0, 0.0, 0.0]),
+                imag: Some(vec![0.0, 1.0, 0.5]),
+                disable_normalization: false,
+            },
+        ));
+        let (osc, scheduled, osc_node) = oscillator_node_parts(
+            &*ctx.0.lock().unwrap(),
+            web_audio_api_rs::node::OscillatorOptions::default(),
+        );
+        let destination = base.destination_audio_node();
+
+        osc_node.connect_node(&destination, 0, 0).unwrap();
+        osc.0
+            .lock()
+            .unwrap()
+            .set_periodic_wave(periodic_wave.0.clone());
+        assert_eq!(osc.r#type().unwrap(), "custom");
+        scheduled.start(0.0).unwrap();
+        scheduled.stop(0.0).unwrap();
     }
 }
