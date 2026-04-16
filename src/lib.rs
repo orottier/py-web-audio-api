@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use web_audio_api_rs::context::BaseAudioContext;
 use web_audio_api_rs::node::{AudioNode as RsAudioNode, AudioScheduledSourceNode as _};
+use web_audio_api_rs::AutomationRate;
 
 static PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
 
@@ -138,11 +139,77 @@ fn oscillator_node(ctx: &impl BaseAudioContext) -> (OscillatorNode, AudioNode) {
     (OscillatorNode(node), AudioNode(audio_node))
 }
 
+fn automation_rate_to_str(value: AutomationRate) -> &'static str {
+    match value {
+        AutomationRate::A => "a-rate",
+        AutomationRate::K => "k-rate",
+    }
+}
+
+fn automation_rate_from_str(value: &str) -> PyResult<AutomationRate> {
+    match value {
+        "a-rate" => Ok(AutomationRate::A),
+        "k-rate" => Ok(AutomationRate::K),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "expected 'a-rate' or 'k-rate'",
+        )),
+    }
+}
+
+fn oscillator_type_to_str(value: web_audio_api_rs::node::OscillatorType) -> &'static str {
+    match value {
+        web_audio_api_rs::node::OscillatorType::Sine => "sine",
+        web_audio_api_rs::node::OscillatorType::Square => "square",
+        web_audio_api_rs::node::OscillatorType::Sawtooth => "sawtooth",
+        web_audio_api_rs::node::OscillatorType::Triangle => "triangle",
+        web_audio_api_rs::node::OscillatorType::Custom => "custom",
+    }
+}
+
+fn oscillator_type_from_str(value: &str) -> PyResult<web_audio_api_rs::node::OscillatorType> {
+    match value {
+        "sine" => Ok(web_audio_api_rs::node::OscillatorType::Sine),
+        "square" => Ok(web_audio_api_rs::node::OscillatorType::Square),
+        "sawtooth" => Ok(web_audio_api_rs::node::OscillatorType::Sawtooth),
+        "triangle" => Ok(web_audio_api_rs::node::OscillatorType::Triangle),
+        "custom" => Ok(web_audio_api_rs::node::OscillatorType::Custom),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "expected 'sine', 'square', 'sawtooth', 'triangle', or 'custom'",
+        )),
+    }
+}
+
 #[pyclass]
 struct AudioParam(web_audio_api_rs::AudioParam);
 
 #[pymethods]
 impl AudioParam {
+    #[getter]
+    fn automation_rate(&self) -> String {
+        automation_rate_to_str(self.0.automation_rate()).to_owned()
+    }
+
+    #[setter]
+    fn set_automation_rate(&self, value: &str) -> PyResult<()> {
+        let value = automation_rate_from_str(value)?;
+        catch_web_audio_panic(|| self.0.set_automation_rate(value))
+    }
+
+    #[getter]
+    fn default_value(&self) -> f32 {
+        self.0.default_value()
+    }
+
+    #[getter]
+    fn min_value(&self) -> f32 {
+        self.0.min_value()
+    }
+
+    #[getter]
+    fn max_value(&self) -> f32 {
+        self.0.max_value()
+    }
+
     #[getter]
     fn value(&self) -> PyResult<f32> {
         Ok(self.0.value())
@@ -150,8 +217,57 @@ impl AudioParam {
 
     #[setter]
     fn set_value(&self, value: f32) -> PyResult<()> {
-        self.0.set_value(value);
-        Ok(())
+        catch_web_audio_panic(|| {
+            self.0.set_value(value);
+        })
+    }
+
+    fn set_value_at_time(&self, value: f32, start_time: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| {
+            self.0.set_value_at_time(value, start_time);
+        })
+    }
+
+    fn linear_ramp_to_value_at_time(&self, value: f32, end_time: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| {
+            self.0.linear_ramp_to_value_at_time(value, end_time);
+        })
+    }
+
+    fn exponential_ramp_to_value_at_time(&self, value: f32, end_time: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| {
+            self.0.exponential_ramp_to_value_at_time(value, end_time);
+        })
+    }
+
+    fn set_target_at_time(&self, value: f32, start_time: f64, time_constant: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| {
+            self.0.set_target_at_time(value, start_time, time_constant);
+        })
+    }
+
+    fn cancel_scheduled_values(&self, cancel_time: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| {
+            self.0.cancel_scheduled_values(cancel_time);
+        })
+    }
+
+    fn cancel_and_hold_at_time(&self, cancel_time: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| {
+            self.0.cancel_and_hold_at_time(cancel_time);
+        })
+    }
+
+    fn set_value_curve_at_time(
+        &self,
+        values: Vec<f32>,
+        start_time: f64,
+        duration: f64,
+    ) -> PyResult<()> {
+        catch_web_audio_panic(|| {
+            self.0
+                .set_value_curve_at_time(&values, start_time, duration);
+        })
     }
 }
 
@@ -183,6 +299,21 @@ impl OscillatorNode {
     #[pyo3(signature = (when=0.0))]
     fn stop(&mut self, when: f64) {
         self.0.lock().unwrap().stop_at(when)
+    }
+
+    #[getter]
+    fn type_(&self) -> PyResult<String> {
+        Ok(oscillator_type_to_str(self.0.lock().unwrap().type_()).to_owned())
+    }
+
+    #[setter]
+    fn set_type_(&mut self, value: &str) -> PyResult<()> {
+        self.set_type(value)
+    }
+
+    fn set_type(&mut self, value: &str) -> PyResult<()> {
+        let value = oscillator_type_from_str(value)?;
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_type(value))
     }
 
     fn frequency(&self) -> AudioParam {
