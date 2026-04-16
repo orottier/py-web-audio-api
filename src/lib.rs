@@ -126,11 +126,10 @@ impl BaseAudioContext {
     }
 }
 
-fn new_realtime_context() -> web_audio_api_rs::context::AudioContext {
-    web_audio_api_rs::context::AudioContext::new(web_audio_api_rs::context::AudioContextOptions {
-        sink_id: "none".into(),
-        ..Default::default()
-    })
+fn new_realtime_context(
+    options: web_audio_api_rs::context::AudioContextOptions,
+) -> web_audio_api_rs::context::AudioContext {
+    web_audio_api_rs::context::AudioContext::new(options)
 }
 
 #[pymethods]
@@ -428,12 +427,16 @@ struct AudioContext(Arc<Mutex<web_audio_api_rs::context::AudioContext>>);
 #[pymethods]
 impl AudioContext {
     #[new]
-    fn new() -> PyClassInitializer<Self> {
-        let ctx = Arc::new(Mutex::new(new_realtime_context()));
-        PyClassInitializer::from(BaseAudioContext::new(BaseAudioContextInner::Realtime(
-            Arc::clone(&ctx),
-        )))
-        .add_subclass(Self(ctx))
+    fn new(options: Option<&Bound<'_, PyAny>>) -> PyResult<PyClassInitializer<Self>> {
+        let options = audio_context_options(options)?;
+        let ctx =
+            catch_web_audio_panic_result(|| Arc::new(Mutex::new(new_realtime_context(options))))?;
+        Ok(
+            PyClassInitializer::from(BaseAudioContext::new(BaseAudioContextInner::Realtime(
+                Arc::clone(&ctx),
+            )))
+            .add_subclass(Self(ctx)),
+        )
     }
 }
 
@@ -875,6 +878,63 @@ fn audio_buffer_options(
         length,
         sample_rate,
     })
+}
+
+fn audio_context_latency_category_from_value(
+    value: &Bound<'_, PyAny>,
+) -> PyResult<web_audio_api_rs::context::AudioContextLatencyCategory> {
+    if let Ok(value) = value.extract::<f64>() {
+        return Ok(web_audio_api_rs::context::AudioContextLatencyCategory::Custom(value));
+    }
+
+    match value.extract::<&str>()? {
+        "balanced" => Ok(web_audio_api_rs::context::AudioContextLatencyCategory::Balanced),
+        "interactive" => Ok(web_audio_api_rs::context::AudioContextLatencyCategory::Interactive),
+        "playback" => Ok(web_audio_api_rs::context::AudioContextLatencyCategory::Playback),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "AudioContextOptions.latencyHint must be 'balanced', 'interactive', 'playback', or a number",
+        )),
+    }
+}
+
+fn audio_context_render_size_category_from_str(
+    value: &str,
+) -> PyResult<web_audio_api_rs::context::AudioContextRenderSizeCategory> {
+    match value {
+        "default" => Ok(web_audio_api_rs::context::AudioContextRenderSizeCategory::Default),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "AudioContextOptions.renderSizeHint must be 'default'",
+        )),
+    }
+}
+
+fn audio_context_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::context::AudioContextOptions> {
+    let mut parsed = web_audio_api_rs::context::AudioContextOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err("AudioContextOptions must be a dict")
+    })?;
+
+    if let Some(latency_hint) = options.get_item("latencyHint")? {
+        parsed.latency_hint = audio_context_latency_category_from_value(&latency_hint)?;
+    }
+    if let Some(sample_rate) = options.get_item("sampleRate")? {
+        parsed.sample_rate = Some(sample_rate.extract()?);
+    }
+    if let Some(sink_id) = options.get_item("sinkId")? {
+        parsed.sink_id = sink_id.extract()?;
+    }
+    if let Some(render_size_hint) = options.get_item("renderSizeHint")? {
+        parsed.render_size_hint =
+            audio_context_render_size_category_from_str(render_size_hint.extract::<&str>()?)?;
+    }
+
+    Ok(parsed)
 }
 
 enum ScheduledSourceInner {
@@ -2517,8 +2577,17 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    fn silent_audio_context_options() -> web_audio_api_rs::context::AudioContextOptions {
+        web_audio_api_rs::context::AudioContextOptions {
+            sink_id: "none".into(),
+            ..Default::default()
+        }
+    }
+
     fn audio_context_parts() -> (AudioContext, BaseAudioContext) {
-        let ctx = Arc::new(Mutex::new(new_realtime_context()));
+        let ctx = Arc::new(Mutex::new(new_realtime_context(
+            silent_audio_context_options(),
+        )));
         (
             AudioContext(Arc::clone(&ctx)),
             BaseAudioContext::new(BaseAudioContextInner::Realtime(ctx)),

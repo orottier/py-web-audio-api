@@ -40,7 +40,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         src.disconnect()
 
     def test_base_audio_context_inheritance_and_shared_surface_work(self):
-        audio_ctx = web_audio_api.AudioContext()
+        audio_ctx = web_audio_api.AudioContext({"sinkId": "none"})
         offline_ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
 
         self.assertIsInstance(audio_ctx, web_audio_api.BaseAudioContext)
@@ -165,8 +165,25 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             web_audio_api.BaseAudioContext()
 
     def test_audio_context_does_not_expose_start_rendering(self):
-        ctx = web_audio_api.AudioContext()
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
         self.assertFalse(hasattr(ctx, "startRendering"))
+
+    def test_audio_context_options_are_accepted(self):
+        ctx = web_audio_api.AudioContext(
+            {
+                "sinkId": "none",
+                "sampleRate": 8_000.0,
+                "latencyHint": "playback",
+                "renderSizeHint": "default",
+            }
+        )
+
+        self.assertEqual(ctx.sampleRate, 8_000.0)
+
+        custom_latency_ctx = web_audio_api.AudioContext(
+            {"sinkId": "none", "latencyHint": 0.25}
+        )
+        self.assertGreater(custom_latency_ctx.sampleRate, 0.0)
 
     def test_offline_oscillator_graph_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
