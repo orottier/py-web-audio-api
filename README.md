@@ -7,14 +7,14 @@ https://pypi.org/project/web-audio-api/
 Create and activate a virtual environment:
 
 ```bash
-python3 -m venv .env
-source .env/bin/activate
+uv venv --python 3.11 .venv
+source .venv/bin/activate
 ```
 
 Install the development build into the active environment:
 
 ```bash
-python3 -m pip install maturin
+.venv/bin/python -m pip install maturin
 maturin develop
 ```
 
@@ -34,7 +34,7 @@ osc.frequency.value = 300
 Build a wheel:
 
 ```bash
-python3 -m pip wheel . --no-deps --wheel-dir dist
+.venv/bin/python -m pip wheel . --no-deps --wheel-dir dist
 ```
 
 ## Test
@@ -49,5 +49,5 @@ Run the Python tests against an installed wheel:
 
 ```bash
 maturin develop
-python3 -m unittest discover -s tests
+.venv/bin/python -m unittest discover -s tests
 ```

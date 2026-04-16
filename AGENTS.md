@@ -13,6 +13,8 @@
 - Before finishing, run:
   - `cargo fmt --check`
   - `cargo test`
-  - `python3 -m pip wheel . --no-deps --wheel-dir /tmp/py-web-audio-api-wheel-test`
+  - `uv venv --python 3.11 .venv`
+  - `.venv/bin/python -m pip install maturin`
+  - `.venv/bin/python -m pip wheel . --no-deps --wheel-dir /tmp/py-web-audio-api-wheel-test`
   - reinstall the wheel into the test venv
-  - `python -m unittest discover -s tests`
+  - `.venv/bin/python -m unittest discover -s tests`

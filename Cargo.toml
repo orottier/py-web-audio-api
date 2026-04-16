@@ -9,5 +9,5 @@ name = "web_audio_api"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = "0.28.2"
+pyo3 = { version = "0.28.2", features = ["abi3-py311"] }
 web-audio-api-rs = { version = "1.2.0", package = "web-audio-api" }
