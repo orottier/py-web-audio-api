@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyDictMethods};
+use pyo3::PyClass;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -908,17 +909,90 @@ impl ScheduledSourceInner {
     }
 }
 
+fn wrap_audio_node<T, P>(node: T, wrap: impl FnOnce(Arc<Mutex<T>>) -> P) -> (P, AudioNode)
+where
+    T: RsAudioNode + Send + 'static,
+{
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (wrap(node), AudioNode(audio_node))
+}
+
+fn init_audio_node<T, P>(node: T, wrap: impl FnOnce(Arc<Mutex<T>>) -> P) -> PyClassInitializer<P>
+where
+    T: RsAudioNode + Send + 'static,
+    P: PyClass<BaseType = AudioNode>,
+{
+    let (node, base) = wrap_audio_node(node, wrap);
+    PyClassInitializer::from(base).add_subclass(node)
+}
+
+fn new_audio_node_py<T, P>(
+    py: Python<'_>,
+    node: T,
+    wrap: impl FnOnce(Arc<Mutex<T>>) -> P,
+) -> PyResult<Py<P>>
+where
+    T: RsAudioNode + Send + 'static,
+    P: PyClass<BaseType = AudioNode>,
+{
+    Py::new(py, init_audio_node(node, wrap))
+}
+
+fn wrap_scheduled_source_node<T, P>(
+    node: T,
+    scheduled: impl FnOnce(Arc<Mutex<T>>) -> ScheduledSourceInner,
+    wrap: impl FnOnce(Arc<Mutex<T>>) -> P,
+) -> (P, AudioScheduledSourceNode, AudioNode)
+where
+    T: RsAudioNode + Send + 'static,
+{
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (
+        wrap(Arc::clone(&node)),
+        AudioScheduledSourceNode::new(scheduled(node)),
+        AudioNode(audio_node),
+    )
+}
+
+fn init_scheduled_source_node<T, P>(
+    node: T,
+    scheduled: impl FnOnce(Arc<Mutex<T>>) -> ScheduledSourceInner,
+    wrap: impl FnOnce(Arc<Mutex<T>>) -> P,
+) -> PyClassInitializer<P>
+where
+    T: RsAudioNode + Send + 'static,
+    P: PyClass<BaseType = AudioScheduledSourceNode>,
+{
+    let (node, scheduled, base) = wrap_scheduled_source_node(node, scheduled, wrap);
+    PyClassInitializer::from(base)
+        .add_subclass(scheduled)
+        .add_subclass(node)
+}
+
+fn new_scheduled_source_node_py<T, P>(
+    py: Python<'_>,
+    node: T,
+    scheduled: impl FnOnce(Arc<Mutex<T>>) -> ScheduledSourceInner,
+    wrap: impl FnOnce(Arc<Mutex<T>>) -> P,
+) -> PyResult<Py<P>>
+where
+    T: RsAudioNode + Send + 'static,
+    P: PyClass<BaseType = AudioScheduledSourceNode>,
+{
+    Py::new(py, init_scheduled_source_node(node, scheduled, wrap))
+}
+
+#[cfg(test)]
 fn audio_buffer_source_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AudioBufferSourceOptions,
 ) -> (AudioBufferSourceNode, AudioScheduledSourceNode, AudioNode) {
-    let node = web_audio_api_rs::node::AudioBufferSourceNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (
-        AudioBufferSourceNode(Arc::clone(&node)),
-        AudioScheduledSourceNode::new(ScheduledSourceInner::AudioBufferSource(node)),
-        AudioNode(audio_node),
+    wrap_scheduled_source_node(
+        web_audio_api_rs::node::AudioBufferSourceNode::new(ctx, options),
+        ScheduledSourceInner::AudioBufferSource,
+        AudioBufferSourceNode,
     )
 }
 
@@ -926,10 +1000,11 @@ fn audio_buffer_source_node(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AudioBufferSourceOptions,
 ) -> PyClassInitializer<AudioBufferSourceNode> {
-    let (node, scheduled, base) = audio_buffer_source_node_parts(ctx, options);
-    PyClassInitializer::from(base)
-        .add_subclass(scheduled)
-        .add_subclass(node)
+    init_scheduled_source_node(
+        web_audio_api_rs::node::AudioBufferSourceNode::new(ctx, options),
+        ScheduledSourceInner::AudioBufferSource,
+        AudioBufferSourceNode,
+    )
 }
 
 fn audio_buffer_source_node_py(
@@ -937,25 +1012,33 @@ fn audio_buffer_source_node_py(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AudioBufferSourceOptions,
 ) -> PyResult<Py<AudioBufferSourceNode>> {
-    Py::new(py, audio_buffer_source_node(ctx, options))
+    new_scheduled_source_node_py(
+        py,
+        web_audio_api_rs::node::AudioBufferSourceNode::new(ctx, options),
+        ScheduledSourceInner::AudioBufferSource,
+        AudioBufferSourceNode,
+    )
 }
 
+#[cfg(test)]
 fn analyser_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AnalyserOptions,
 ) -> (AnalyserNode, AudioNode) {
-    let node = web_audio_api_rs::node::AnalyserNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (AnalyserNode(node), AudioNode(audio_node))
+    wrap_audio_node(
+        web_audio_api_rs::node::AnalyserNode::new(ctx, options),
+        AnalyserNode,
+    )
 }
 
 fn analyser_node(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AnalyserOptions,
 ) -> PyClassInitializer<AnalyserNode> {
-    let (node, base) = analyser_node_parts(ctx, options);
-    PyClassInitializer::from(base).add_subclass(node)
+    init_audio_node(
+        web_audio_api_rs::node::AnalyserNode::new(ctx, options),
+        AnalyserNode,
+    )
 }
 
 fn analyser_node_py(
@@ -963,25 +1046,32 @@ fn analyser_node_py(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AnalyserOptions,
 ) -> PyResult<Py<AnalyserNode>> {
-    Py::new(py, analyser_node(ctx, options))
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::AnalyserNode::new(ctx, options),
+        AnalyserNode,
+    )
 }
 
+#[cfg(test)]
 fn convolver_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ConvolverOptions,
 ) -> (ConvolverNode, AudioNode) {
-    let node = web_audio_api_rs::node::ConvolverNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (ConvolverNode(node), AudioNode(audio_node))
+    wrap_audio_node(
+        web_audio_api_rs::node::ConvolverNode::new(ctx, options),
+        ConvolverNode,
+    )
 }
 
 fn convolver_node(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ConvolverOptions,
 ) -> PyClassInitializer<ConvolverNode> {
-    let (node, base) = convolver_node_parts(ctx, options);
-    PyClassInitializer::from(base).add_subclass(node)
+    init_audio_node(
+        web_audio_api_rs::node::ConvolverNode::new(ctx, options),
+        ConvolverNode,
+    )
 }
 
 fn convolver_node_py(
@@ -989,25 +1079,32 @@ fn convolver_node_py(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ConvolverOptions,
 ) -> PyResult<Py<ConvolverNode>> {
-    Py::new(py, convolver_node(ctx, options))
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::ConvolverNode::new(ctx, options),
+        ConvolverNode,
+    )
 }
 
+#[cfg(test)]
 fn dynamics_compressor_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::DynamicsCompressorOptions,
 ) -> (DynamicsCompressorNode, AudioNode) {
-    let node = web_audio_api_rs::node::DynamicsCompressorNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (DynamicsCompressorNode(node), AudioNode(audio_node))
+    wrap_audio_node(
+        web_audio_api_rs::node::DynamicsCompressorNode::new(ctx, options),
+        DynamicsCompressorNode,
+    )
 }
 
 fn dynamics_compressor_node(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::DynamicsCompressorOptions,
 ) -> PyClassInitializer<DynamicsCompressorNode> {
-    let (node, base) = dynamics_compressor_node_parts(ctx, options);
-    PyClassInitializer::from(base).add_subclass(node)
+    init_audio_node(
+        web_audio_api_rs::node::DynamicsCompressorNode::new(ctx, options),
+        DynamicsCompressorNode,
+    )
 }
 
 fn dynamics_compressor_node_py(
@@ -1015,25 +1112,32 @@ fn dynamics_compressor_node_py(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::DynamicsCompressorOptions,
 ) -> PyResult<Py<DynamicsCompressorNode>> {
-    Py::new(py, dynamics_compressor_node(ctx, options))
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::DynamicsCompressorNode::new(ctx, options),
+        DynamicsCompressorNode,
+    )
 }
 
+#[cfg(test)]
 fn gain_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::GainOptions,
 ) -> (GainNode, AudioNode) {
-    let node = web_audio_api_rs::node::GainNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (GainNode(node), AudioNode(audio_node))
+    wrap_audio_node(
+        web_audio_api_rs::node::GainNode::new(ctx, options),
+        GainNode,
+    )
 }
 
 fn gain_node(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::GainOptions,
 ) -> PyClassInitializer<GainNode> {
-    let (node, base) = gain_node_parts(ctx, options);
-    PyClassInitializer::from(base).add_subclass(node)
+    init_audio_node(
+        web_audio_api_rs::node::GainNode::new(ctx, options),
+        GainNode,
+    )
 }
 
 fn gain_node_py(
@@ -1041,25 +1145,32 @@ fn gain_node_py(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::GainOptions,
 ) -> PyResult<Py<GainNode>> {
-    Py::new(py, gain_node(ctx, options))
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::GainNode::new(ctx, options),
+        GainNode,
+    )
 }
 
+#[cfg(test)]
 fn delay_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::DelayOptions,
 ) -> (DelayNode, AudioNode) {
-    let node = web_audio_api_rs::node::DelayNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (DelayNode(node), AudioNode(audio_node))
+    wrap_audio_node(
+        web_audio_api_rs::node::DelayNode::new(ctx, options),
+        DelayNode,
+    )
 }
 
 fn delay_node(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::DelayOptions,
 ) -> PyClassInitializer<DelayNode> {
-    let (node, base) = delay_node_parts(ctx, options);
-    PyClassInitializer::from(base).add_subclass(node)
+    init_audio_node(
+        web_audio_api_rs::node::DelayNode::new(ctx, options),
+        DelayNode,
+    )
 }
 
 fn delay_node_py(
@@ -1067,25 +1178,32 @@ fn delay_node_py(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::DelayOptions,
 ) -> PyResult<Py<DelayNode>> {
-    Py::new(py, delay_node(ctx, options))
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::DelayNode::new(ctx, options),
+        DelayNode,
+    )
 }
 
+#[cfg(test)]
 fn stereo_panner_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::StereoPannerOptions,
 ) -> (StereoPannerNode, AudioNode) {
-    let node = web_audio_api_rs::node::StereoPannerNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (StereoPannerNode(node), AudioNode(audio_node))
+    wrap_audio_node(
+        web_audio_api_rs::node::StereoPannerNode::new(ctx, options),
+        StereoPannerNode,
+    )
 }
 
 fn stereo_panner_node(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::StereoPannerOptions,
 ) -> PyClassInitializer<StereoPannerNode> {
-    let (node, base) = stereo_panner_node_parts(ctx, options);
-    PyClassInitializer::from(base).add_subclass(node)
+    init_audio_node(
+        web_audio_api_rs::node::StereoPannerNode::new(ctx, options),
+        StereoPannerNode,
+    )
 }
 
 fn stereo_panner_node_py(
@@ -1093,25 +1211,32 @@ fn stereo_panner_node_py(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::StereoPannerOptions,
 ) -> PyResult<Py<StereoPannerNode>> {
-    Py::new(py, stereo_panner_node(ctx, options))
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::StereoPannerNode::new(ctx, options),
+        StereoPannerNode,
+    )
 }
 
+#[cfg(test)]
 fn channel_merger_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelMergerOptions,
 ) -> (ChannelMergerNode, AudioNode) {
-    let node = web_audio_api_rs::node::ChannelMergerNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (ChannelMergerNode(node), AudioNode(audio_node))
+    wrap_audio_node(
+        web_audio_api_rs::node::ChannelMergerNode::new(ctx, options),
+        ChannelMergerNode,
+    )
 }
 
 fn channel_merger_node(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelMergerOptions,
 ) -> PyClassInitializer<ChannelMergerNode> {
-    let (node, base) = channel_merger_node_parts(ctx, options);
-    PyClassInitializer::from(base).add_subclass(node)
+    init_audio_node(
+        web_audio_api_rs::node::ChannelMergerNode::new(ctx, options),
+        ChannelMergerNode,
+    )
 }
 
 fn channel_merger_node_py(
@@ -1119,25 +1244,32 @@ fn channel_merger_node_py(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelMergerOptions,
 ) -> PyResult<Py<ChannelMergerNode>> {
-    Py::new(py, channel_merger_node(ctx, options))
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::ChannelMergerNode::new(ctx, options),
+        ChannelMergerNode,
+    )
 }
 
+#[cfg(test)]
 fn channel_splitter_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelSplitterOptions,
 ) -> (ChannelSplitterNode, AudioNode) {
-    let node = web_audio_api_rs::node::ChannelSplitterNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (ChannelSplitterNode(node), AudioNode(audio_node))
+    wrap_audio_node(
+        web_audio_api_rs::node::ChannelSplitterNode::new(ctx, options),
+        ChannelSplitterNode,
+    )
 }
 
 fn channel_splitter_node(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelSplitterOptions,
 ) -> PyClassInitializer<ChannelSplitterNode> {
-    let (node, base) = channel_splitter_node_parts(ctx, options);
-    PyClassInitializer::from(base).add_subclass(node)
+    init_audio_node(
+        web_audio_api_rs::node::ChannelSplitterNode::new(ctx, options),
+        ChannelSplitterNode,
+    )
 }
 
 fn channel_splitter_node_py(
@@ -1145,25 +1277,32 @@ fn channel_splitter_node_py(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ChannelSplitterOptions,
 ) -> PyResult<Py<ChannelSplitterNode>> {
-    Py::new(py, channel_splitter_node(ctx, options))
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::ChannelSplitterNode::new(ctx, options),
+        ChannelSplitterNode,
+    )
 }
 
+#[cfg(test)]
 fn biquad_filter_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::BiquadFilterOptions,
 ) -> (BiquadFilterNode, AudioNode) {
-    let node = web_audio_api_rs::node::BiquadFilterNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (BiquadFilterNode(node), AudioNode(audio_node))
+    wrap_audio_node(
+        web_audio_api_rs::node::BiquadFilterNode::new(ctx, options),
+        BiquadFilterNode,
+    )
 }
 
 fn biquad_filter_node(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::BiquadFilterOptions,
 ) -> PyClassInitializer<BiquadFilterNode> {
-    let (node, base) = biquad_filter_node_parts(ctx, options);
-    PyClassInitializer::from(base).add_subclass(node)
+    init_audio_node(
+        web_audio_api_rs::node::BiquadFilterNode::new(ctx, options),
+        BiquadFilterNode,
+    )
 }
 
 fn biquad_filter_node_py(
@@ -1171,47 +1310,53 @@ fn biquad_filter_node_py(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::BiquadFilterOptions,
 ) -> PyResult<Py<BiquadFilterNode>> {
-    Py::new(py, biquad_filter_node(ctx, options))
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::BiquadFilterNode::new(ctx, options),
+        BiquadFilterNode,
+    )
 }
 
+#[cfg(test)]
 fn oscillator_node_parts(
     ctx: &impl RsBaseAudioContext,
 ) -> (OscillatorNode, AudioScheduledSourceNode, AudioNode) {
-    let osc = ctx.create_oscillator();
-    let node = Arc::new(Mutex::new(osc));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (
-        OscillatorNode(Arc::clone(&node)),
-        AudioScheduledSourceNode::new(ScheduledSourceInner::Oscillator(node)),
-        AudioNode(audio_node),
+    wrap_scheduled_source_node(
+        ctx.create_oscillator(),
+        ScheduledSourceInner::Oscillator,
+        OscillatorNode,
     )
 }
 
 fn oscillator_node(ctx: &impl RsBaseAudioContext) -> PyClassInitializer<OscillatorNode> {
-    let (osc, scheduled, base) = oscillator_node_parts(ctx);
-    PyClassInitializer::from(base)
-        .add_subclass(scheduled)
-        .add_subclass(osc)
+    init_scheduled_source_node(
+        ctx.create_oscillator(),
+        ScheduledSourceInner::Oscillator,
+        OscillatorNode,
+    )
 }
 
 fn oscillator_node_py(
     py: Python<'_>,
     ctx: &impl RsBaseAudioContext,
 ) -> PyResult<Py<OscillatorNode>> {
-    Py::new(py, oscillator_node(ctx))
+    new_scheduled_source_node_py(
+        py,
+        ctx.create_oscillator(),
+        ScheduledSourceInner::Oscillator,
+        OscillatorNode,
+    )
 }
 
+#[cfg(test)]
 fn constant_source_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ConstantSourceOptions,
 ) -> (ConstantSourceNode, AudioScheduledSourceNode, AudioNode) {
-    let node = web_audio_api_rs::node::ConstantSourceNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (
-        ConstantSourceNode(Arc::clone(&node)),
-        AudioScheduledSourceNode::new(ScheduledSourceInner::ConstantSource(node)),
-        AudioNode(audio_node),
+    wrap_scheduled_source_node(
+        web_audio_api_rs::node::ConstantSourceNode::new(ctx, options),
+        ScheduledSourceInner::ConstantSource,
+        ConstantSourceNode,
     )
 }
 
@@ -1219,10 +1364,11 @@ fn constant_source_node(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ConstantSourceOptions,
 ) -> PyClassInitializer<ConstantSourceNode> {
-    let (node, scheduled, base) = constant_source_node_parts(ctx, options);
-    PyClassInitializer::from(base)
-        .add_subclass(scheduled)
-        .add_subclass(node)
+    init_scheduled_source_node(
+        web_audio_api_rs::node::ConstantSourceNode::new(ctx, options),
+        ScheduledSourceInner::ConstantSource,
+        ConstantSourceNode,
+    )
 }
 
 fn constant_source_node_py(
@@ -1230,7 +1376,12 @@ fn constant_source_node_py(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::ConstantSourceOptions,
 ) -> PyResult<Py<ConstantSourceNode>> {
-    Py::new(py, constant_source_node(ctx, options))
+    new_scheduled_source_node_py(
+        py,
+        web_audio_api_rs::node::ConstantSourceNode::new(ctx, options),
+        ScheduledSourceInner::ConstantSource,
+        ConstantSourceNode,
+    )
 }
 
 fn constant_source_options(
