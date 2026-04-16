@@ -102,6 +102,18 @@ impl AudioContext {
     fn create_gain(&self, py: Python<'_>) -> PyResult<Py<GainNode>> {
         gain_node_py(py, &self.0, web_audio_api_rs::node::GainOptions::default())
     }
+
+    #[pyo3(name = "createDelay", signature = (max_delay_time=1.0))]
+    fn create_delay(&self, py: Python<'_>, max_delay_time: f64) -> PyResult<Py<DelayNode>> {
+        delay_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::DelayOptions {
+                max_delay_time,
+                ..Default::default()
+            },
+        )
+    }
 }
 
 #[pyclass]
@@ -149,6 +161,18 @@ impl OfflineAudioContext {
     #[pyo3(name = "createGain")]
     fn create_gain(&self, py: Python<'_>) -> PyResult<Py<GainNode>> {
         gain_node_py(py, &self.0, web_audio_api_rs::node::GainOptions::default())
+    }
+
+    #[pyo3(name = "createDelay", signature = (max_delay_time=1.0))]
+    fn create_delay(&self, py: Python<'_>, max_delay_time: f64) -> PyResult<Py<DelayNode>> {
+        delay_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::DelayOptions {
+                max_delay_time,
+                ..Default::default()
+            },
+        )
     }
 
     #[pyo3(name = "startRendering")]
@@ -373,6 +397,32 @@ fn gain_node_py(
     Py::new(py, gain_node(ctx, options))
 }
 
+fn delay_node_parts(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::DelayOptions,
+) -> (DelayNode, AudioNode) {
+    let node = web_audio_api_rs::node::DelayNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (DelayNode(node), AudioNode(audio_node))
+}
+
+fn delay_node(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::DelayOptions,
+) -> PyClassInitializer<DelayNode> {
+    let (node, base) = delay_node_parts(ctx, options);
+    PyClassInitializer::from(base).add_subclass(node)
+}
+
+fn delay_node_py(
+    py: Python<'_>,
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::DelayOptions,
+) -> PyResult<Py<DelayNode>> {
+    Py::new(py, delay_node(ctx, options))
+}
+
 fn oscillator_node_parts(
     ctx: &impl BaseAudioContext,
 ) -> (OscillatorNode, AudioScheduledSourceNode, AudioNode) {
@@ -498,6 +548,28 @@ fn gain_options(
 
     if let Some(gain) = options.get_item("gain")? {
         parsed.gain = gain.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn delay_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::DelayOptions> {
+    let mut parsed = web_audio_api_rs::node::DelayOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options
+        .cast::<PyDict>()
+        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("DelayOptions must be a dict"))?;
+
+    if let Some(max_delay_time) = options.get_item("maxDelayTime")? {
+        parsed.max_delay_time = max_delay_time.extract()?;
+    }
+    if let Some(delay_time) = options.get_item("delayTime")? {
+        parsed.delay_time = delay_time.extract()?;
     }
 
     Ok(parsed)
@@ -831,6 +903,38 @@ impl GainNode {
     }
 }
 
+#[pyclass(extends = AudioNode)]
+struct DelayNode(Arc<Mutex<web_audio_api_rs::node::DelayNode>>);
+
+#[pymethods]
+impl DelayNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = delay_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(delay_node(&ctx.0, options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(delay_node(&ctx.0, options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[getter(delayTime)]
+    fn delay_time(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().delay_time().clone())
+    }
+}
+
 #[pyclass(extends = AudioScheduledSourceNode)]
 struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 
@@ -915,6 +1019,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioScheduledSourceNode>()?;
     m.add_class::<AudioBufferSourceNode>()?;
     m.add_class::<GainNode>()?;
+    m.add_class::<DelayNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -1017,5 +1122,21 @@ mod tests {
 
         gain_node.connect(&destination).unwrap();
         assert_eq!(gain.gain().value().unwrap(), 0.5);
+    }
+
+    #[test]
+    fn delay_graph_smoke_test() {
+        let ctx = OfflineAudioContext::new(1, 128, 44_100.);
+        let (delay, delay_node) = delay_node_parts(
+            &ctx.0,
+            web_audio_api_rs::node::DelayOptions {
+                delay_time: 0.25,
+                ..Default::default()
+            },
+        );
+        let destination = ctx.destination();
+
+        delay_node.connect(&destination).unwrap();
+        assert_eq!(delay.delay_time().value().unwrap(), 0.25);
     }
 }

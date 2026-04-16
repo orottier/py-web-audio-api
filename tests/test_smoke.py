@@ -188,6 +188,24 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         data = ctx.startRendering().getChannelData(0)
         self.assertTrue(all(sample == 0.125 for sample in data))
 
+    def test_delay_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        delay = web_audio_api.DelayNode(ctx, {"delayTime": 0.25, "maxDelayTime": 1.0})
+
+        self.assertIsInstance(delay, web_audio_api.AudioNode)
+        self.assertEqual(delay.delayTime.value, 0.25)
+        self.assertEqual(delay.delayTime.defaultValue, 0.0)
+
+        delay.delayTime.value = 0.5
+        self.assertEqual(delay.delayTime.value, 0.5)
+
+    def test_create_delay_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        delay = ctx.createDelay(2.0)
+
+        self.assertEqual(delay.delayTime.value, 0.0)
+        self.assertEqual(delay.delayTime.maxValue, 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()
