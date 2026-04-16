@@ -85,6 +85,9 @@ enum BaseAudioContextInner {
     Concrete(RsConcreteBaseAudioContext),
 }
 
+#[pyclass]
+struct AudioListener(web_audio_api_rs::AudioListener);
+
 #[pyclass(subclass)]
 struct BaseAudioContext {
     inner: BaseAudioContextInner,
@@ -93,6 +96,32 @@ struct BaseAudioContext {
 impl BaseAudioContext {
     fn new(inner: BaseAudioContextInner) -> Self {
         Self { inner }
+    }
+
+    #[cfg(test)]
+    fn destination_inner(&self) -> AudioDestinationNode {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => destination_node_parts(&*ctx.lock().unwrap()).0,
+            BaseAudioContextInner::Offline(ctx) => destination_node_parts(&*ctx.lock().unwrap()).0,
+            BaseAudioContextInner::Concrete(ctx) => destination_node_parts(ctx).0,
+        }
+    }
+
+    #[cfg(test)]
+    fn destination_audio_node(&self) -> AudioNode {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => destination_node_parts(&*ctx.lock().unwrap()).1,
+            BaseAudioContextInner::Offline(ctx) => destination_node_parts(&*ctx.lock().unwrap()).1,
+            BaseAudioContextInner::Concrete(ctx) => destination_node_parts(ctx).1,
+        }
+    }
+
+    fn listener_inner(&self) -> AudioListener {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => AudioListener(ctx.lock().unwrap().listener()),
+            BaseAudioContextInner::Offline(ctx) => AudioListener(ctx.lock().unwrap().listener()),
+            BaseAudioContextInner::Concrete(ctx) => AudioListener(ctx.listener()),
+        }
     }
 }
 
@@ -106,12 +135,17 @@ fn new_realtime_context() -> web_audio_api_rs::context::AudioContext {
 #[pymethods]
 impl BaseAudioContext {
     #[getter]
-    fn destination(&self) -> AudioNode {
+    fn destination(&self, py: Python<'_>) -> PyResult<Py<AudioDestinationNode>> {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => destination_node(&*ctx.lock().unwrap()),
-            BaseAudioContextInner::Offline(ctx) => destination_node(&*ctx.lock().unwrap()),
-            BaseAudioContextInner::Concrete(ctx) => destination_node(ctx),
+            BaseAudioContextInner::Realtime(ctx) => destination_node_py(py, &*ctx.lock().unwrap()),
+            BaseAudioContextInner::Offline(ctx) => destination_node_py(py, &*ctx.lock().unwrap()),
+            BaseAudioContextInner::Concrete(ctx) => destination_node_py(py, ctx),
         }
+    }
+
+    #[getter]
+    fn listener(&self) -> AudioListener {
+        self.listener_inner()
     }
 
     #[getter(sampleRate)]
@@ -371,6 +405,82 @@ impl OfflineAudioContext {
 
 #[pyclass(subclass)]
 struct AudioNode(Arc<Mutex<dyn RsAudioNode + Send + 'static>>);
+
+#[pyclass(extends = AudioNode)]
+struct AudioDestinationNode(Arc<Mutex<web_audio_api_rs::node::AudioDestinationNode>>);
+
+#[pymethods]
+impl AudioDestinationNode {
+    #[getter(maxChannelCount)]
+    fn max_channel_count(&self) -> usize {
+        self.0.lock().unwrap().max_channel_count()
+    }
+}
+
+#[pymethods]
+impl AudioListener {
+    #[getter(positionX)]
+    fn position_x(&self) -> AudioParam {
+        AudioParam(self.0.position_x().clone())
+    }
+
+    #[getter(positionY)]
+    fn position_y(&self) -> AudioParam {
+        AudioParam(self.0.position_y().clone())
+    }
+
+    #[getter(positionZ)]
+    fn position_z(&self) -> AudioParam {
+        AudioParam(self.0.position_z().clone())
+    }
+
+    #[getter(forwardX)]
+    fn forward_x(&self) -> AudioParam {
+        AudioParam(self.0.forward_x().clone())
+    }
+
+    #[getter(forwardY)]
+    fn forward_y(&self) -> AudioParam {
+        AudioParam(self.0.forward_y().clone())
+    }
+
+    #[getter(forwardZ)]
+    fn forward_z(&self) -> AudioParam {
+        AudioParam(self.0.forward_z().clone())
+    }
+
+    #[getter(upX)]
+    fn up_x(&self) -> AudioParam {
+        AudioParam(self.0.up_x().clone())
+    }
+
+    #[getter(upY)]
+    fn up_y(&self) -> AudioParam {
+        AudioParam(self.0.up_y().clone())
+    }
+
+    #[getter(upZ)]
+    fn up_z(&self) -> AudioParam {
+        AudioParam(self.0.up_z().clone())
+    }
+
+    #[pyo3(name = "setPosition")]
+    fn set_position(&self, x: f32, y: f32, z: f32) {
+        self.0.position_x().set_value(x);
+        self.0.position_y().set_value(y);
+        self.0.position_z().set_value(z);
+    }
+
+    #[pyo3(name = "setOrientation")]
+    fn set_orientation(&self, x: f32, y: f32, z: f32, x_up: f32, y_up: f32, z_up: f32) {
+        self.0.forward_x().set_value(x);
+        self.0.forward_y().set_value(y);
+        self.0.forward_z().set_value(z);
+        self.0.up_x().set_value(x_up);
+        self.0.up_y().set_value(y_up);
+        self.0.up_z().set_value(z_up);
+    }
+}
 
 impl AudioNode {
     fn connect_node(&self, other: &Self, output: usize, input: usize) -> PyResult<()> {
@@ -657,10 +767,22 @@ fn catch_web_audio_panic_result<T>(f: impl FnOnce() -> T) -> PyResult<T> {
     })
 }
 
-fn destination_node(ctx: &impl RsBaseAudioContext) -> AudioNode {
-    let dest = ctx.destination();
-    let node = Arc::new(Mutex::new(dest)) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    AudioNode(node)
+fn destination_node_parts(ctx: &impl RsBaseAudioContext) -> (AudioDestinationNode, AudioNode) {
+    let dest = Arc::new(Mutex::new(ctx.destination()));
+    let node = Arc::clone(&dest) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (AudioDestinationNode(dest), AudioNode(node))
+}
+
+fn destination_node(ctx: &impl RsBaseAudioContext) -> PyClassInitializer<AudioDestinationNode> {
+    let (dest, node) = destination_node_parts(ctx);
+    PyClassInitializer::from(node).add_subclass(dest)
+}
+
+fn destination_node_py(
+    py: Python<'_>,
+    ctx: &impl RsBaseAudioContext,
+) -> PyResult<Py<AudioDestinationNode>> {
+    Py::new(py, destination_node(ctx))
 }
 
 fn audio_buffer_options(
@@ -1788,7 +1910,9 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioContext>()?;
     m.add_class::<OfflineAudioContext>()?;
     m.add_class::<AudioBuffer>()?;
+    m.add_class::<AudioListener>()?;
     m.add_class::<AudioNode>()?;
+    m.add_class::<AudioDestinationNode>()?;
     m.add_class::<AudioScheduledSourceNode>()?;
     m.add_class::<AudioBufferSourceNode>()?;
     m.add_class::<GainNode>()?;
@@ -1847,8 +1971,8 @@ mod tests {
         assert_eq!(realtime.create_buffer(1, 16, 8_000.).length(), 16);
         assert_eq!(offline.create_buffer(1, 16, 8_000.).length(), 16);
 
-        let _ = realtime.destination();
-        let _ = offline.destination();
+        let _ = realtime.destination_inner();
+        let _ = offline.destination_inner();
     }
 
     #[test]
@@ -1877,7 +2001,7 @@ mod tests {
     fn oscillator_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (osc, scheduled, osc_node) = oscillator_node_parts(&*ctx.0.lock().unwrap());
-        let destination = base.destination();
+        let destination = base.destination_audio_node();
 
         osc_node.connect_node(&destination, 0, 0).unwrap();
         osc.frequency().set_value(300.0).unwrap();
@@ -1915,7 +2039,7 @@ mod tests {
             &*ctx.0.lock().unwrap(),
             web_audio_api_rs::node::ConstantSourceOptions { offset: 2. },
         );
-        let destination = base.destination();
+        let destination = base.destination_audio_node();
 
         src_node.connect_node(&destination, 0, 0).unwrap();
         assert_eq!(src.offset().value().unwrap(), 2.);
@@ -1939,7 +2063,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let destination = base.destination();
+        let destination = base.destination_audio_node();
 
         src_node.connect_node(&destination, 0, 0).unwrap();
         assert_eq!(src.playback_rate().value().unwrap(), 1.);
@@ -1959,7 +2083,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let destination = base.destination();
+        let destination = base.destination_audio_node();
 
         gain_node.connect_node(&destination, 0, 0).unwrap();
         assert_eq!(gain.gain().value().unwrap(), 0.5);
@@ -1975,7 +2099,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let destination = base.destination();
+        let destination = base.destination_audio_node();
 
         delay_node.connect_node(&destination, 0, 0).unwrap();
         assert_eq!(delay.delay_time().value().unwrap(), 0.25);
@@ -1991,7 +2115,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let destination = base.destination();
+        let destination = base.destination_audio_node();
 
         panner_node.connect_node(&destination, 0, 0).unwrap();
         assert_eq!(panner.pan().value().unwrap(), -0.5);
@@ -2007,7 +2131,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let destination = base.destination();
+        let destination = base.destination_audio_node();
 
         merger_node.connect_node(&destination, 0, 0).unwrap();
     }
@@ -2022,7 +2146,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let destination = base.destination();
+        let destination = base.destination_audio_node();
 
         splitter_node.connect_node(&destination, 0, 0).unwrap();
     }
@@ -2034,7 +2158,7 @@ mod tests {
             &*ctx.0.lock().unwrap(),
             web_audio_api_rs::node::BiquadFilterOptions::default(),
         );
-        let destination = base.destination();
+        let destination = base.destination_audio_node();
 
         filter_node.connect_node(&destination, 0, 0).unwrap();
         filter.set_type("highpass").unwrap();

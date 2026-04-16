@@ -65,8 +65,30 @@ class WebAudioApiSmokeTest(unittest.TestCase):
 
         self.assertIsInstance(audio_ctx.createGain(), web_audio_api.GainNode)
         self.assertIsInstance(offline_ctx.createGain(), web_audio_api.GainNode)
-        self.assertIsInstance(audio_ctx.destination, web_audio_api.AudioNode)
-        self.assertIsInstance(offline_ctx.destination, web_audio_api.AudioNode)
+        self.assertIsInstance(audio_ctx.destination, web_audio_api.AudioDestinationNode)
+        self.assertIsInstance(offline_ctx.destination, web_audio_api.AudioDestinationNode)
+        self.assertIsInstance(audio_ctx.listener, web_audio_api.AudioListener)
+        self.assertIsInstance(offline_ctx.listener, web_audio_api.AudioListener)
+
+    def test_audio_destination_and_listener_work(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+
+        self.assertEqual(ctx.destination.maxChannelCount, 2)
+        self.assertIsInstance(ctx.destination, web_audio_api.AudioNode)
+
+        listener = ctx.listener
+        self.assertEqual(listener.positionX.value, 0.0)
+        self.assertEqual(listener.forwardX.value, 0.0)
+        self.assertEqual(listener.forwardY.value, 0.0)
+        self.assertEqual(listener.forwardZ.value, -1.0)
+        self.assertEqual(listener.upY.value, 1.0)
+
+        listener.setPosition(1.0, 2.0, 3.0)
+        listener.setOrientation(0.0, 0.0, -1.0, 0.0, 1.0, 0.0)
+
+        self.assertEqual(listener.positionX.value, 1.0)
+        self.assertEqual(listener.positionY.value, 2.0)
+        self.assertEqual(listener.positionZ.value, 3.0)
 
     def test_base_audio_context_is_not_constructible(self):
         with self.assertRaises(TypeError):
