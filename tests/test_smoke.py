@@ -206,6 +206,25 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(delay.delayTime.value, 0.0)
         self.assertEqual(delay.delayTime.maxValue, 2.0)
 
+    def test_stereo_panner_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+        panner = web_audio_api.StereoPannerNode(ctx, {"pan": -0.5})
+
+        self.assertIsInstance(panner, web_audio_api.AudioNode)
+        self.assertEqual(panner.pan.value, -0.5)
+        self.assertEqual(panner.pan.defaultValue, 0.0)
+        self.assertEqual(panner.pan.minValue, -1.0)
+        self.assertEqual(panner.pan.maxValue, 1.0)
+
+        panner.pan.value = 0.5
+        self.assertEqual(panner.pan.value, 0.5)
+
+    def test_create_stereo_panner_works(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+        panner = ctx.createStereoPanner()
+
+        self.assertEqual(panner.pan.value, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

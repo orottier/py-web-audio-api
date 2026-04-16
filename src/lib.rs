@@ -114,6 +114,15 @@ impl AudioContext {
             },
         )
     }
+
+    #[pyo3(name = "createStereoPanner")]
+    fn create_stereo_panner(&self, py: Python<'_>) -> PyResult<Py<StereoPannerNode>> {
+        stereo_panner_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::StereoPannerOptions::default(),
+        )
+    }
 }
 
 #[pyclass]
@@ -172,6 +181,15 @@ impl OfflineAudioContext {
                 max_delay_time,
                 ..Default::default()
             },
+        )
+    }
+
+    #[pyo3(name = "createStereoPanner")]
+    fn create_stereo_panner(&self, py: Python<'_>) -> PyResult<Py<StereoPannerNode>> {
+        stereo_panner_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::StereoPannerOptions::default(),
         )
     }
 
@@ -423,6 +441,32 @@ fn delay_node_py(
     Py::new(py, delay_node(ctx, options))
 }
 
+fn stereo_panner_node_parts(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::StereoPannerOptions,
+) -> (StereoPannerNode, AudioNode) {
+    let node = web_audio_api_rs::node::StereoPannerNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (StereoPannerNode(node), AudioNode(audio_node))
+}
+
+fn stereo_panner_node(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::StereoPannerOptions,
+) -> PyClassInitializer<StereoPannerNode> {
+    let (node, base) = stereo_panner_node_parts(ctx, options);
+    PyClassInitializer::from(base).add_subclass(node)
+}
+
+fn stereo_panner_node_py(
+    py: Python<'_>,
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::StereoPannerOptions,
+) -> PyResult<Py<StereoPannerNode>> {
+    Py::new(py, stereo_panner_node(ctx, options))
+}
+
 fn oscillator_node_parts(
     ctx: &impl BaseAudioContext,
 ) -> (OscillatorNode, AudioScheduledSourceNode, AudioNode) {
@@ -570,6 +614,25 @@ fn delay_options(
     }
     if let Some(delay_time) = options.get_item("delayTime")? {
         parsed.delay_time = delay_time.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn stereo_panner_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::StereoPannerOptions> {
+    let mut parsed = web_audio_api_rs::node::StereoPannerOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err("StereoPannerOptions must be a dict")
+    })?;
+
+    if let Some(pan) = options.get_item("pan")? {
+        parsed.pan = pan.extract()?;
     }
 
     Ok(parsed)
@@ -935,6 +998,38 @@ impl DelayNode {
     }
 }
 
+#[pyclass(extends = AudioNode)]
+struct StereoPannerNode(Arc<Mutex<web_audio_api_rs::node::StereoPannerNode>>);
+
+#[pymethods]
+impl StereoPannerNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = stereo_panner_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(stereo_panner_node(&ctx.0, options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(stereo_panner_node(&ctx.0, options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[getter]
+    fn pan(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().pan().clone())
+    }
+}
+
 #[pyclass(extends = AudioScheduledSourceNode)]
 struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 
@@ -1020,6 +1115,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioBufferSourceNode>()?;
     m.add_class::<GainNode>()?;
     m.add_class::<DelayNode>()?;
+    m.add_class::<StereoPannerNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -1138,5 +1234,21 @@ mod tests {
 
         delay_node.connect(&destination).unwrap();
         assert_eq!(delay.delay_time().value().unwrap(), 0.25);
+    }
+
+    #[test]
+    fn stereo_panner_graph_smoke_test() {
+        let ctx = OfflineAudioContext::new(2, 128, 44_100.);
+        let (panner, panner_node) = stereo_panner_node_parts(
+            &ctx.0,
+            web_audio_api_rs::node::StereoPannerOptions {
+                pan: -0.5,
+                ..Default::default()
+            },
+        );
+        let destination = ctx.destination();
+
+        panner_node.connect(&destination).unwrap();
+        assert_eq!(panner.pan().value().unwrap(), -0.5);
     }
 }
