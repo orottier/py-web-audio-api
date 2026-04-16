@@ -139,6 +139,22 @@ impl AudioContext {
             },
         )
     }
+
+    #[pyo3(name = "createChannelSplitter", signature = (number_of_outputs=6))]
+    fn create_channel_splitter(
+        &self,
+        py: Python<'_>,
+        number_of_outputs: usize,
+    ) -> PyResult<Py<ChannelSplitterNode>> {
+        channel_splitter_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::ChannelSplitterOptions {
+                number_of_outputs,
+                ..Default::default()
+            },
+        )
+    }
 }
 
 #[pyclass]
@@ -220,6 +236,22 @@ impl OfflineAudioContext {
             &self.0,
             web_audio_api_rs::node::ChannelMergerOptions {
                 number_of_inputs,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[pyo3(name = "createChannelSplitter", signature = (number_of_outputs=6))]
+    fn create_channel_splitter(
+        &self,
+        py: Python<'_>,
+        number_of_outputs: usize,
+    ) -> PyResult<Py<ChannelSplitterNode>> {
+        channel_splitter_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::ChannelSplitterOptions {
+                number_of_outputs,
                 ..Default::default()
             },
         )
@@ -525,6 +557,32 @@ fn channel_merger_node_py(
     Py::new(py, channel_merger_node(ctx, options))
 }
 
+fn channel_splitter_node_parts(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::ChannelSplitterOptions,
+) -> (ChannelSplitterNode, AudioNode) {
+    let node = web_audio_api_rs::node::ChannelSplitterNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (ChannelSplitterNode(node), AudioNode(audio_node))
+}
+
+fn channel_splitter_node(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::ChannelSplitterOptions,
+) -> PyClassInitializer<ChannelSplitterNode> {
+    let (node, base) = channel_splitter_node_parts(ctx, options);
+    PyClassInitializer::from(base).add_subclass(node)
+}
+
+fn channel_splitter_node_py(
+    py: Python<'_>,
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::ChannelSplitterOptions,
+) -> PyResult<Py<ChannelSplitterNode>> {
+    Py::new(py, channel_splitter_node(ctx, options))
+}
+
 fn oscillator_node_parts(
     ctx: &impl BaseAudioContext,
 ) -> (OscillatorNode, AudioScheduledSourceNode, AudioNode) {
@@ -710,6 +768,25 @@ fn channel_merger_options(
 
     if let Some(number_of_inputs) = options.get_item("numberOfInputs")? {
         parsed.number_of_inputs = number_of_inputs.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn channel_splitter_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::ChannelSplitterOptions> {
+    let mut parsed = web_audio_api_rs::node::ChannelSplitterOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err("ChannelSplitterOptions must be a dict")
+    })?;
+
+    if let Some(number_of_outputs) = options.get_item("numberOfOutputs")? {
+        parsed.number_of_outputs = number_of_outputs.extract()?;
     }
 
     Ok(parsed)
@@ -1135,6 +1212,34 @@ impl ChannelMergerNode {
     }
 }
 
+#[pyclass(extends = AudioNode)]
+#[allow(dead_code)]
+struct ChannelSplitterNode(Arc<Mutex<web_audio_api_rs::node::ChannelSplitterNode>>);
+
+#[pymethods]
+impl ChannelSplitterNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = channel_splitter_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(channel_splitter_node(&ctx.0, options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(channel_splitter_node(&ctx.0, options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+}
+
 #[pyclass(extends = AudioScheduledSourceNode)]
 struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 
@@ -1222,6 +1327,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DelayNode>()?;
     m.add_class::<StereoPannerNode>()?;
     m.add_class::<ChannelMergerNode>()?;
+    m.add_class::<ChannelSplitterNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -1371,5 +1477,20 @@ mod tests {
         let destination = ctx.destination();
 
         merger_node.connect(&destination).unwrap();
+    }
+
+    #[test]
+    fn channel_splitter_graph_smoke_test() {
+        let ctx = OfflineAudioContext::new(2, 128, 44_100.);
+        let (_, splitter_node) = channel_splitter_node_parts(
+            &ctx.0,
+            web_audio_api_rs::node::ChannelSplitterOptions {
+                number_of_outputs: 2,
+                ..Default::default()
+            },
+        );
+        let destination = ctx.destination();
+
+        splitter_node.connect(&destination).unwrap();
     }
 }

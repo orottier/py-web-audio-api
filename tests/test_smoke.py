@@ -238,6 +238,19 @@ class WebAudioApiSmokeTest(unittest.TestCase):
 
         self.assertIsInstance(merger, web_audio_api.ChannelMergerNode)
 
+    def test_channel_splitter_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+        splitter = web_audio_api.ChannelSplitterNode(ctx, {"numberOfOutputs": 2})
+
+        self.assertIsInstance(splitter, web_audio_api.AudioNode)
+        splitter.connect(ctx.destination)
+
+    def test_create_channel_splitter_works(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+        splitter = ctx.createChannelSplitter(2)
+
+        self.assertIsInstance(splitter, web_audio_api.ChannelSplitterNode)
+
 
 if __name__ == "__main__":
     unittest.main()
