@@ -39,8 +39,6 @@ jobs:
         include:
           - target: x86_64
             before-script-linux: yum install -y alsa-lib-devel pkgconfig
-          - target: aarch64
-            before-script-linux: apt-get update && apt-get install -y libasound2-dev pkg-config
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -85,7 +83,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: macos-12
+          - runner: macos-13
             target: x86_64
           - runner: macos-14
             target: aarch64
