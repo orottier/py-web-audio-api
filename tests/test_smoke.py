@@ -277,6 +277,34 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected 'max', 'clamped-max', or 'explicit'"):
             web_audio_api.GainNode(ctx, {"channelCountMode": "sideways"})
 
+    def test_iir_filter_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        filt = web_audio_api.IIRFilterNode(
+            ctx,
+            {
+                "feedforward": [1.0, 0.0],
+                "feedback": [1.0, 0.0],
+                "channelCount": 1,
+                "channelCountMode": "explicit",
+            },
+        )
+
+        self.assertIsInstance(filt, web_audio_api.AudioNode)
+        self.assertEqual(filt.channelCount, 1)
+        self.assertEqual(filt.channelCountMode, "explicit")
+
+        mag, phase = filt.getFrequencyResponse([10.0, 100.0, 1_000.0])
+        self.assertEqual(len(mag), 3)
+        self.assertEqual(len(phase), 3)
+
+    def test_create_iir_filter_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        filt = ctx.createIIRFilter([1.0, 0.0], [1.0, 0.0])
+
+        mag, phase = filt.getFrequencyResponse([50.0, 500.0])
+        self.assertEqual(len(mag), 2)
+        self.assertEqual(len(phase), 2)
+
     def test_audio_param_methods_work(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         osc = web_audio_api.OscillatorNode(ctx)

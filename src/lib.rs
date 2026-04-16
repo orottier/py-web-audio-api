@@ -272,6 +272,29 @@ impl BaseAudioContext {
         }
     }
 
+    #[pyo3(name = "createIIRFilter")]
+    fn create_iir_filter(
+        &self,
+        py: Python<'_>,
+        feedforward: Vec<f64>,
+        feedback: Vec<f64>,
+    ) -> PyResult<Py<IIRFilterNode>> {
+        let options = web_audio_api_rs::node::IIRFilterOptions {
+            audio_node_options: web_audio_api_rs::node::AudioNodeOptions::default(),
+            feedforward,
+            feedback,
+        };
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => {
+                iir_filter_node_py(py, &*ctx.lock().unwrap(), options)
+            }
+            BaseAudioContextInner::Offline(ctx) => {
+                iir_filter_node_py(py, &*ctx.lock().unwrap(), options)
+            }
+            BaseAudioContextInner::Concrete(ctx) => iir_filter_node_py(py, ctx, options),
+        }
+    }
+
     #[pyo3(name = "createDelay", signature = (max_delay_time=1.0))]
     fn create_delay(&self, py: Python<'_>, max_delay_time: f64) -> PyResult<Py<DelayNode>> {
         let options = web_audio_api_rs::node::DelayOptions {
@@ -1423,6 +1446,39 @@ fn biquad_filter_node_py(
 }
 
 #[cfg(test)]
+fn iir_filter_node_parts(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::IIRFilterOptions,
+) -> (IIRFilterNode, AudioNode) {
+    wrap_audio_node(
+        web_audio_api_rs::node::IIRFilterNode::new(ctx, options),
+        IIRFilterNode,
+    )
+}
+
+fn iir_filter_node(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::IIRFilterOptions,
+) -> PyClassInitializer<IIRFilterNode> {
+    init_audio_node(
+        web_audio_api_rs::node::IIRFilterNode::new(ctx, options),
+        IIRFilterNode,
+    )
+}
+
+fn iir_filter_node_py(
+    py: Python<'_>,
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::IIRFilterOptions,
+) -> PyResult<Py<IIRFilterNode>> {
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::IIRFilterNode::new(ctx, options),
+        IIRFilterNode,
+    )
+}
+
+#[cfg(test)]
 fn oscillator_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::OscillatorOptions,
@@ -1800,6 +1856,34 @@ fn oscillator_options(
             "OscillatorOptions.periodicWave is not implemented yet",
         ));
     }
+
+    Ok(parsed)
+}
+
+fn iir_filter_options(
+    options: &Bound<'_, PyAny>,
+) -> PyResult<web_audio_api_rs::node::IIRFilterOptions> {
+    let options = options
+        .cast::<PyDict>()
+        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("IIRFilterOptions must be a dict"))?;
+
+    let mut parsed = web_audio_api_rs::node::IIRFilterOptions {
+        audio_node_options: web_audio_api_rs::node::AudioNodeOptions::default(),
+        feedforward: options
+            .get_item("feedforward")?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyTypeError::new_err("IIRFilterOptions.feedforward is required")
+            })?
+            .extract()?,
+        feedback: options
+            .get_item("feedback")?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyTypeError::new_err("IIRFilterOptions.feedback is required")
+            })?
+            .extract()?,
+    };
+
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
     Ok(parsed)
 }
@@ -2530,6 +2614,46 @@ impl BiquadFilterNode {
     }
 }
 
+#[pyclass(extends = AudioNode)]
+struct IIRFilterNode(Arc<Mutex<web_audio_api_rs::node::IIRFilterNode>>);
+
+#[pymethods]
+impl IIRFilterNode {
+    #[new]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: &Bound<'_, PyAny>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = iir_filter_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(iir_filter_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(iir_filter_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[pyo3(name = "getFrequencyResponse")]
+    fn get_frequency_response(&self, frequency_hz: Vec<f32>) -> PyResult<(Vec<f32>, Vec<f32>)> {
+        let mut mag_response = vec![0.0; frequency_hz.len()];
+        let mut phase_response = vec![0.0; frequency_hz.len()];
+        catch_web_audio_panic(|| {
+            self.0.lock().unwrap().get_frequency_response(
+                &frequency_hz,
+                &mut mag_response,
+                &mut phase_response,
+            );
+        })?;
+        Ok((mag_response, phase_response))
+    }
+}
+
 #[pyclass(extends = AudioScheduledSourceNode)]
 struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 
@@ -2631,6 +2755,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ChannelMergerNode>()?;
     m.add_class::<ChannelSplitterNode>()?;
     m.add_class::<BiquadFilterNode>()?;
+    m.add_class::<IIRFilterNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -2950,5 +3075,28 @@ mod tests {
         filter.set_type("highpass").unwrap();
         assert_eq!(filter.r#type(), "highpass");
         assert_eq!(filter.frequency().value().unwrap(), 350.);
+    }
+
+    #[test]
+    fn iir_filter_graph_smoke_test() {
+        let (ctx, base) = offline_context_parts(1, 128, 44_100.);
+        let (filter, filter_node) = iir_filter_node_parts(
+            &*ctx.0.lock().unwrap(),
+            web_audio_api_rs::node::IIRFilterOptions {
+                audio_node_options: web_audio_api_rs::node::AudioNodeOptions::default(),
+                feedforward: vec![1.0, 0.0],
+                feedback: vec![1.0, 0.0],
+            },
+        );
+        let destination = base.destination_audio_node();
+
+        filter_node.connect_node(&destination, 0, 0).unwrap();
+
+        let (mag, phase) = filter
+            .get_frequency_response(vec![10.0, 100.0, 1_000.0])
+            .unwrap();
+
+        assert_eq!(mag.len(), 3);
+        assert_eq!(phase.len(), 3);
     }
 }
