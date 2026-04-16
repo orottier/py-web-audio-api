@@ -251,6 +251,30 @@ class WebAudioApiSmokeTest(unittest.TestCase):
 
         self.assertIsInstance(splitter, web_audio_api.ChannelSplitterNode)
 
+    def test_biquad_filter_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+        biquad = web_audio_api.BiquadFilterNode(ctx, {"type": "highpass", "Q": 2.0})
+
+        self.assertIsInstance(biquad, web_audio_api.AudioNode)
+        self.assertEqual(biquad.type, "highpass")
+        self.assertEqual(biquad.frequency.value, 350.0)
+        self.assertEqual(biquad.detune.value, 0.0)
+        self.assertEqual(biquad.Q.value, 2.0)
+        self.assertEqual(biquad.gain.value, 0.0)
+
+        biquad.type = "notch"
+        self.assertEqual(biquad.type, "notch")
+
+        mag_response, phase_response = biquad.getFrequencyResponse([100.0, 1000.0])
+        self.assertEqual(len(mag_response), 2)
+        self.assertEqual(len(phase_response), 2)
+
+    def test_create_biquad_filter_works(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+        biquad = ctx.createBiquadFilter()
+
+        self.assertEqual(biquad.type, "lowpass")
+
 
 if __name__ == "__main__":
     unittest.main()

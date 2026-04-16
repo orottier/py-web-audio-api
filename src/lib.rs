@@ -155,6 +155,15 @@ impl AudioContext {
             },
         )
     }
+
+    #[pyo3(name = "createBiquadFilter")]
+    fn create_biquad_filter(&self, py: Python<'_>) -> PyResult<Py<BiquadFilterNode>> {
+        biquad_filter_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::BiquadFilterOptions::default(),
+        )
+    }
 }
 
 #[pyclass]
@@ -254,6 +263,15 @@ impl OfflineAudioContext {
                 number_of_outputs,
                 ..Default::default()
             },
+        )
+    }
+
+    #[pyo3(name = "createBiquadFilter")]
+    fn create_biquad_filter(&self, py: Python<'_>) -> PyResult<Py<BiquadFilterNode>> {
+        biquad_filter_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::BiquadFilterOptions::default(),
         )
     }
 
@@ -583,6 +601,32 @@ fn channel_splitter_node_py(
     Py::new(py, channel_splitter_node(ctx, options))
 }
 
+fn biquad_filter_node_parts(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::BiquadFilterOptions,
+) -> (BiquadFilterNode, AudioNode) {
+    let node = web_audio_api_rs::node::BiquadFilterNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (BiquadFilterNode(node), AudioNode(audio_node))
+}
+
+fn biquad_filter_node(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::BiquadFilterOptions,
+) -> PyClassInitializer<BiquadFilterNode> {
+    let (node, base) = biquad_filter_node_parts(ctx, options);
+    PyClassInitializer::from(base).add_subclass(node)
+}
+
+fn biquad_filter_node_py(
+    py: Python<'_>,
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::BiquadFilterOptions,
+) -> PyResult<Py<BiquadFilterNode>> {
+    Py::new(py, biquad_filter_node(ctx, options))
+}
+
 fn oscillator_node_parts(
     ctx: &impl BaseAudioContext,
 ) -> (OscillatorNode, AudioScheduledSourceNode, AudioNode) {
@@ -787,6 +831,66 @@ fn channel_splitter_options(
 
     if let Some(number_of_outputs) = options.get_item("numberOfOutputs")? {
         parsed.number_of_outputs = number_of_outputs.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn biquad_filter_type_to_str(value: web_audio_api_rs::node::BiquadFilterType) -> &'static str {
+    match value {
+        web_audio_api_rs::node::BiquadFilterType::Lowpass => "lowpass",
+        web_audio_api_rs::node::BiquadFilterType::Highpass => "highpass",
+        web_audio_api_rs::node::BiquadFilterType::Bandpass => "bandpass",
+        web_audio_api_rs::node::BiquadFilterType::Lowshelf => "lowshelf",
+        web_audio_api_rs::node::BiquadFilterType::Highshelf => "highshelf",
+        web_audio_api_rs::node::BiquadFilterType::Peaking => "peaking",
+        web_audio_api_rs::node::BiquadFilterType::Notch => "notch",
+        web_audio_api_rs::node::BiquadFilterType::Allpass => "allpass",
+    }
+}
+
+fn biquad_filter_type_from_str(value: &str) -> PyResult<web_audio_api_rs::node::BiquadFilterType> {
+    match value {
+        "lowpass" => Ok(web_audio_api_rs::node::BiquadFilterType::Lowpass),
+        "highpass" => Ok(web_audio_api_rs::node::BiquadFilterType::Highpass),
+        "bandpass" => Ok(web_audio_api_rs::node::BiquadFilterType::Bandpass),
+        "lowshelf" => Ok(web_audio_api_rs::node::BiquadFilterType::Lowshelf),
+        "highshelf" => Ok(web_audio_api_rs::node::BiquadFilterType::Highshelf),
+        "peaking" => Ok(web_audio_api_rs::node::BiquadFilterType::Peaking),
+        "notch" => Ok(web_audio_api_rs::node::BiquadFilterType::Notch),
+        "allpass" => Ok(web_audio_api_rs::node::BiquadFilterType::Allpass),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "expected 'lowpass', 'highpass', 'bandpass', 'lowshelf', 'highshelf', 'peaking', 'notch', or 'allpass'",
+        )),
+    }
+}
+
+fn biquad_filter_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::BiquadFilterOptions> {
+    let mut parsed = web_audio_api_rs::node::BiquadFilterOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err("BiquadFilterOptions must be a dict")
+    })?;
+
+    if let Some(type_) = options.get_item("type")? {
+        parsed.type_ = biquad_filter_type_from_str(type_.extract::<&str>()?)?;
+    }
+    if let Some(q) = options.get_item("Q")? {
+        parsed.q = q.extract()?;
+    }
+    if let Some(detune) = options.get_item("detune")? {
+        parsed.detune = detune.extract()?;
+    }
+    if let Some(frequency) = options.get_item("frequency")? {
+        parsed.frequency = frequency.extract()?;
+    }
+    if let Some(gain) = options.get_item("gain")? {
+        parsed.gain = gain.extract()?;
     }
 
     Ok(parsed)
@@ -1240,6 +1344,78 @@ impl ChannelSplitterNode {
     }
 }
 
+#[pyclass(extends = AudioNode)]
+struct BiquadFilterNode(Arc<Mutex<web_audio_api_rs::node::BiquadFilterNode>>);
+
+#[pymethods]
+impl BiquadFilterNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = biquad_filter_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(biquad_filter_node(&ctx.0, options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(biquad_filter_node(&ctx.0, options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[getter]
+    fn r#type(&self) -> String {
+        biquad_filter_type_to_str(self.0.lock().unwrap().type_()).to_owned()
+    }
+
+    #[setter]
+    fn set_type(&mut self, value: &str) -> PyResult<()> {
+        let value = biquad_filter_type_from_str(value)?;
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_type(value))
+    }
+
+    #[getter]
+    fn frequency(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().frequency().clone())
+    }
+
+    #[getter]
+    fn detune(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().detune().clone())
+    }
+
+    #[getter(Q)]
+    fn q(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().q().clone())
+    }
+
+    #[getter]
+    fn gain(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().gain().clone())
+    }
+
+    #[pyo3(name = "getFrequencyResponse")]
+    fn get_frequency_response(&self, frequency_hz: Vec<f32>) -> PyResult<(Vec<f32>, Vec<f32>)> {
+        let mut mag_response = vec![0.0; frequency_hz.len()];
+        let mut phase_response = vec![0.0; frequency_hz.len()];
+        catch_web_audio_panic(|| {
+            self.0.lock().unwrap().get_frequency_response(
+                &frequency_hz,
+                &mut mag_response,
+                &mut phase_response,
+            );
+        })?;
+        Ok((mag_response, phase_response))
+    }
+}
+
 #[pyclass(extends = AudioScheduledSourceNode)]
 struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 
@@ -1328,6 +1504,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<StereoPannerNode>()?;
     m.add_class::<ChannelMergerNode>()?;
     m.add_class::<ChannelSplitterNode>()?;
+    m.add_class::<BiquadFilterNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -1492,5 +1669,20 @@ mod tests {
         let destination = ctx.destination();
 
         splitter_node.connect(&destination).unwrap();
+    }
+
+    #[test]
+    fn biquad_filter_graph_smoke_test() {
+        let ctx = OfflineAudioContext::new(2, 128, 44_100.);
+        let (mut filter, filter_node) = biquad_filter_node_parts(
+            &ctx.0,
+            web_audio_api_rs::node::BiquadFilterOptions::default(),
+        );
+        let destination = ctx.destination();
+
+        filter_node.connect(&destination).unwrap();
+        filter.set_type("highpass").unwrap();
+        assert_eq!(filter.r#type(), "highpass");
+        assert_eq!(filter.frequency().value().unwrap(), 350.);
     }
 }
