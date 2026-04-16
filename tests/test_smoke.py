@@ -225,6 +225,19 @@ class WebAudioApiSmokeTest(unittest.TestCase):
 
         self.assertEqual(panner.pan.value, 0.0)
 
+    def test_channel_merger_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+        merger = web_audio_api.ChannelMergerNode(ctx, {"numberOfInputs": 2})
+
+        self.assertIsInstance(merger, web_audio_api.AudioNode)
+        merger.connect(ctx.destination)
+
+    def test_create_channel_merger_works(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+        merger = ctx.createChannelMerger(2)
+
+        self.assertIsInstance(merger, web_audio_api.ChannelMergerNode)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -123,6 +123,22 @@ impl AudioContext {
             web_audio_api_rs::node::StereoPannerOptions::default(),
         )
     }
+
+    #[pyo3(name = "createChannelMerger", signature = (number_of_inputs=6))]
+    fn create_channel_merger(
+        &self,
+        py: Python<'_>,
+        number_of_inputs: usize,
+    ) -> PyResult<Py<ChannelMergerNode>> {
+        channel_merger_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::ChannelMergerOptions {
+                number_of_inputs,
+                ..Default::default()
+            },
+        )
+    }
 }
 
 #[pyclass]
@@ -190,6 +206,22 @@ impl OfflineAudioContext {
             py,
             &self.0,
             web_audio_api_rs::node::StereoPannerOptions::default(),
+        )
+    }
+
+    #[pyo3(name = "createChannelMerger", signature = (number_of_inputs=6))]
+    fn create_channel_merger(
+        &self,
+        py: Python<'_>,
+        number_of_inputs: usize,
+    ) -> PyResult<Py<ChannelMergerNode>> {
+        channel_merger_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::ChannelMergerOptions {
+                number_of_inputs,
+                ..Default::default()
+            },
         )
     }
 
@@ -467,6 +499,32 @@ fn stereo_panner_node_py(
     Py::new(py, stereo_panner_node(ctx, options))
 }
 
+fn channel_merger_node_parts(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::ChannelMergerOptions,
+) -> (ChannelMergerNode, AudioNode) {
+    let node = web_audio_api_rs::node::ChannelMergerNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (ChannelMergerNode(node), AudioNode(audio_node))
+}
+
+fn channel_merger_node(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::ChannelMergerOptions,
+) -> PyClassInitializer<ChannelMergerNode> {
+    let (node, base) = channel_merger_node_parts(ctx, options);
+    PyClassInitializer::from(base).add_subclass(node)
+}
+
+fn channel_merger_node_py(
+    py: Python<'_>,
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::ChannelMergerOptions,
+) -> PyResult<Py<ChannelMergerNode>> {
+    Py::new(py, channel_merger_node(ctx, options))
+}
+
 fn oscillator_node_parts(
     ctx: &impl BaseAudioContext,
 ) -> (OscillatorNode, AudioScheduledSourceNode, AudioNode) {
@@ -633,6 +691,25 @@ fn stereo_panner_options(
 
     if let Some(pan) = options.get_item("pan")? {
         parsed.pan = pan.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn channel_merger_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::ChannelMergerOptions> {
+    let mut parsed = web_audio_api_rs::node::ChannelMergerOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err("ChannelMergerOptions must be a dict")
+    })?;
+
+    if let Some(number_of_inputs) = options.get_item("numberOfInputs")? {
+        parsed.number_of_inputs = number_of_inputs.extract()?;
     }
 
     Ok(parsed)
@@ -1030,6 +1107,34 @@ impl StereoPannerNode {
     }
 }
 
+#[pyclass(extends = AudioNode)]
+#[allow(dead_code)]
+struct ChannelMergerNode(Arc<Mutex<web_audio_api_rs::node::ChannelMergerNode>>);
+
+#[pymethods]
+impl ChannelMergerNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = channel_merger_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(channel_merger_node(&ctx.0, options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(channel_merger_node(&ctx.0, options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+}
+
 #[pyclass(extends = AudioScheduledSourceNode)]
 struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 
@@ -1116,6 +1221,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<GainNode>()?;
     m.add_class::<DelayNode>()?;
     m.add_class::<StereoPannerNode>()?;
+    m.add_class::<ChannelMergerNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -1250,5 +1356,20 @@ mod tests {
 
         panner_node.connect(&destination).unwrap();
         assert_eq!(panner.pan().value().unwrap(), -0.5);
+    }
+
+    #[test]
+    fn channel_merger_graph_smoke_test() {
+        let ctx = OfflineAudioContext::new(2, 128, 44_100.);
+        let (_, merger_node) = channel_merger_node_parts(
+            &ctx.0,
+            web_audio_api_rs::node::ChannelMergerOptions {
+                number_of_inputs: 2,
+                ..Default::default()
+            },
+        );
+        let destination = ctx.destination();
+
+        merger_node.connect(&destination).unwrap();
     }
 }
