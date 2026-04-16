@@ -360,6 +360,25 @@ impl BaseAudioContext {
             ),
         }
     }
+
+    #[pyo3(name = "createAnalyser")]
+    fn create_analyser(&self, py: Python<'_>) -> PyResult<Py<AnalyserNode>> {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => analyser_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::AnalyserOptions::default(),
+            ),
+            BaseAudioContextInner::Offline(ctx) => analyser_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::AnalyserOptions::default(),
+            ),
+            BaseAudioContextInner::Concrete(ctx) => {
+                analyser_node_py(py, ctx, web_audio_api_rs::node::AnalyserOptions::default())
+            }
+        }
+    }
 }
 
 #[pyclass(extends = BaseAudioContext)]
@@ -881,6 +900,32 @@ fn audio_buffer_source_node_py(
     Py::new(py, audio_buffer_source_node(ctx, options))
 }
 
+fn analyser_node_parts(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::AnalyserOptions,
+) -> (AnalyserNode, AudioNode) {
+    let node = web_audio_api_rs::node::AnalyserNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (AnalyserNode(node), AudioNode(audio_node))
+}
+
+fn analyser_node(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::AnalyserOptions,
+) -> PyClassInitializer<AnalyserNode> {
+    let (node, base) = analyser_node_parts(ctx, options);
+    PyClassInitializer::from(base).add_subclass(node)
+}
+
+fn analyser_node_py(
+    py: Python<'_>,
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::AnalyserOptions,
+) -> PyResult<Py<AnalyserNode>> {
+    Py::new(py, analyser_node(ctx, options))
+}
+
 fn gain_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::GainOptions,
@@ -1165,6 +1210,34 @@ fn gain_options(
 
     if let Some(gain) = options.get_item("gain")? {
         parsed.gain = gain.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn analyser_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::AnalyserOptions> {
+    let mut parsed = web_audio_api_rs::node::AnalyserOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options
+        .cast::<PyDict>()
+        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("AnalyserOptions must be a dict"))?;
+
+    if let Some(fft_size) = options.get_item("fftSize")? {
+        parsed.fft_size = fft_size.extract()?;
+    }
+    if let Some(max_decibels) = options.get_item("maxDecibels")? {
+        parsed.max_decibels = max_decibels.extract()?;
+    }
+    if let Some(min_decibels) = options.get_item("minDecibels")? {
+        parsed.min_decibels = min_decibels.extract()?;
+    }
+    if let Some(smoothing_time_constant) = options.get_item("smoothingTimeConstant")? {
+        parsed.smoothing_time_constant = smoothing_time_constant.extract()?;
     }
 
     Ok(parsed)
@@ -1606,6 +1679,105 @@ impl AudioBufferSourceNode {
 }
 
 #[pyclass(extends = AudioNode)]
+struct AnalyserNode(Arc<Mutex<web_audio_api_rs::node::AnalyserNode>>);
+
+#[pymethods]
+impl AnalyserNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = analyser_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(analyser_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(analyser_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[getter(fftSize)]
+    fn fft_size(&self) -> usize {
+        self.0.lock().unwrap().fft_size()
+    }
+
+    #[setter(fftSize)]
+    fn set_fft_size(&mut self, value: usize) -> PyResult<()> {
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_fft_size(value))
+    }
+
+    #[getter(frequencyBinCount)]
+    fn frequency_bin_count(&self) -> usize {
+        self.0.lock().unwrap().frequency_bin_count()
+    }
+
+    #[getter(minDecibels)]
+    fn min_decibels(&self) -> f64 {
+        self.0.lock().unwrap().min_decibels()
+    }
+
+    #[setter(minDecibels)]
+    fn set_min_decibels(&mut self, value: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_min_decibels(value))
+    }
+
+    #[getter(maxDecibels)]
+    fn max_decibels(&self) -> f64 {
+        self.0.lock().unwrap().max_decibels()
+    }
+
+    #[setter(maxDecibels)]
+    fn set_max_decibels(&mut self, value: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_max_decibels(value))
+    }
+
+    #[getter(smoothingTimeConstant)]
+    fn smoothing_time_constant(&self) -> f64 {
+        self.0.lock().unwrap().smoothing_time_constant()
+    }
+
+    #[setter(smoothingTimeConstant)]
+    fn set_smoothing_time_constant(&mut self, value: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_smoothing_time_constant(value))
+    }
+
+    #[pyo3(name = "getFloatFrequencyData")]
+    fn get_float_frequency_data(&mut self, mut array: Vec<f32>) -> Vec<f32> {
+        self.0.lock().unwrap().get_float_frequency_data(&mut array);
+        array
+    }
+
+    #[pyo3(name = "getByteFrequencyData")]
+    fn get_byte_frequency_data(&mut self, mut array: Vec<u8>) -> Vec<u8> {
+        self.0.lock().unwrap().get_byte_frequency_data(&mut array);
+        array
+    }
+
+    #[pyo3(name = "getFloatTimeDomainData")]
+    fn get_float_time_domain_data(&mut self, mut array: Vec<f32>) -> Vec<f32> {
+        self.0
+            .lock()
+            .unwrap()
+            .get_float_time_domain_data(&mut array);
+        array
+    }
+
+    #[pyo3(name = "getByteTimeDomainData")]
+    fn get_byte_time_domain_data(&mut self, mut array: Vec<u8>) -> Vec<u8> {
+        self.0.lock().unwrap().get_byte_time_domain_data(&mut array);
+        array
+    }
+}
+
+#[pyclass(extends = AudioNode)]
 struct GainNode(Arc<Mutex<web_audio_api_rs::node::GainNode>>);
 
 #[pymethods]
@@ -1914,6 +2086,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioNode>()?;
     m.add_class::<AudioDestinationNode>()?;
     m.add_class::<AudioScheduledSourceNode>()?;
+    m.add_class::<AnalyserNode>()?;
     m.add_class::<AudioBufferSourceNode>()?;
     m.add_class::<GainNode>()?;
     m.add_class::<DelayNode>()?;
@@ -1995,6 +2168,25 @@ mod tests {
         assert_eq!(gain_node.channel_count().unwrap(), 1);
         assert_eq!(gain_node.channel_count_mode().unwrap(), "explicit");
         assert_eq!(gain_node.channel_interpretation().unwrap(), "discrete");
+    }
+
+    #[test]
+    fn analyser_graph_smoke_test() {
+        let (ctx, base) = offline_context_parts(1, 128, 44_100.);
+        let (mut analyser, analyser_node) = analyser_node_parts(
+            &*ctx.0.lock().unwrap(),
+            web_audio_api_rs::node::AnalyserOptions {
+                fft_size: 64,
+                ..Default::default()
+            },
+        );
+        let destination = base.destination_audio_node();
+
+        analyser_node.connect_node(&destination, 0, 0).unwrap();
+        assert_eq!(analyser.fft_size(), 64);
+        assert_eq!(analyser.frequency_bin_count(), 32);
+        analyser.set_smoothing_time_constant(0.5).unwrap();
+        assert_eq!(analyser.smoothing_time_constant(), 0.5);
     }
 
     #[test]

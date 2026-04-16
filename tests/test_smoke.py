@@ -90,6 +90,38 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(listener.positionY.value, 2.0)
         self.assertEqual(listener.positionZ.value, 3.0)
 
+    def test_analyser_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        analyser = web_audio_api.AnalyserNode(ctx, {"fftSize": 64})
+
+        self.assertIsInstance(analyser, web_audio_api.AudioNode)
+        self.assertEqual(analyser.fftSize, 64)
+        self.assertEqual(analyser.frequencyBinCount, 32)
+        self.assertEqual(analyser.minDecibels, -100.0)
+        self.assertEqual(analyser.maxDecibels, -30.0)
+        self.assertEqual(analyser.smoothingTimeConstant, 0.8)
+
+        analyser.fftSize = 128
+        analyser.minDecibels = -90.0
+        analyser.maxDecibels = -20.0
+        analyser.smoothingTimeConstant = 0.5
+
+        self.assertEqual(analyser.fftSize, 128)
+        self.assertEqual(analyser.frequencyBinCount, 64)
+        self.assertEqual(analyser.minDecibels, -90.0)
+        self.assertEqual(analyser.maxDecibels, -20.0)
+        self.assertEqual(analyser.smoothingTimeConstant, 0.5)
+        self.assertEqual(len(analyser.getFloatFrequencyData([0.0] * 64)), 64)
+        self.assertEqual(len(analyser.getByteFrequencyData([0] * 64)), 64)
+        self.assertEqual(len(analyser.getFloatTimeDomainData([0.0] * 128)), 128)
+        self.assertEqual(len(analyser.getByteTimeDomainData([0] * 128)), 128)
+
+    def test_create_analyser_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        analyser = ctx.createAnalyser()
+
+        self.assertEqual(analyser.fftSize, 2048)
+
     def test_base_audio_context_is_not_constructible(self):
         with self.assertRaises(TypeError):
             web_audio_api.BaseAudioContext()
