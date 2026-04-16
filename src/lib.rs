@@ -3,8 +3,13 @@ use pyo3::types::{PyDict, PyDictMethods};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use web_audio_api_rs::context::BaseAudioContext as RsBaseAudioContext;
-use web_audio_api_rs::node::{AudioNode as RsAudioNode, AudioScheduledSourceNode as _};
+use web_audio_api_rs::context::{
+    BaseAudioContext as RsBaseAudioContext, ConcreteBaseAudioContext as RsConcreteBaseAudioContext,
+};
+use web_audio_api_rs::node::{
+    AudioNode as RsAudioNode, AudioScheduledSourceNode as _, ChannelCountMode,
+    ChannelInterpretation,
+};
 use web_audio_api_rs::AutomationRate;
 
 static PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
@@ -63,6 +68,7 @@ impl AudioBuffer {
 enum BaseAudioContextInner {
     Realtime(Arc<Mutex<web_audio_api_rs::context::AudioContext>>),
     Offline(Arc<Mutex<web_audio_api_rs::context::OfflineAudioContext>>),
+    Concrete(RsConcreteBaseAudioContext),
 }
 
 #[pyclass(subclass)]
@@ -90,6 +96,7 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => destination_node(&*ctx.lock().unwrap()),
             BaseAudioContextInner::Offline(ctx) => destination_node(&*ctx.lock().unwrap()),
+            BaseAudioContextInner::Concrete(ctx) => destination_node(ctx),
         }
     }
 
@@ -98,6 +105,7 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => ctx.lock().unwrap().sample_rate(),
             BaseAudioContextInner::Offline(ctx) => ctx.lock().unwrap().sample_rate(),
+            BaseAudioContextInner::Concrete(ctx) => ctx.sample_rate(),
         }
     }
 
@@ -106,6 +114,7 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => ctx.lock().unwrap().current_time(),
             BaseAudioContextInner::Offline(ctx) => ctx.lock().unwrap().current_time(),
+            BaseAudioContextInner::Concrete(ctx) => ctx.current_time(),
         }
     }
 
@@ -127,6 +136,9 @@ impl BaseAudioContext {
                 length,
                 sample_rate,
             )),
+            BaseAudioContextInner::Concrete(ctx) => {
+                AudioBuffer(ctx.create_buffer(number_of_channels, length, sample_rate))
+            }
         }
     }
 
@@ -135,6 +147,7 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => oscillator_node_py(py, &*ctx.lock().unwrap()),
             BaseAudioContextInner::Offline(ctx) => oscillator_node_py(py, &*ctx.lock().unwrap()),
+            BaseAudioContextInner::Concrete(ctx) => oscillator_node_py(py, ctx),
         }
     }
 
@@ -149,6 +162,11 @@ impl BaseAudioContext {
             BaseAudioContextInner::Offline(ctx) => constant_source_node_py(
                 py,
                 &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::ConstantSourceOptions::default(),
+            ),
+            BaseAudioContextInner::Concrete(ctx) => constant_source_node_py(
+                py,
+                ctx,
                 web_audio_api_rs::node::ConstantSourceOptions::default(),
             ),
         }
@@ -167,6 +185,11 @@ impl BaseAudioContext {
                 &*ctx.lock().unwrap(),
                 web_audio_api_rs::node::AudioBufferSourceOptions::default(),
             ),
+            BaseAudioContextInner::Concrete(ctx) => audio_buffer_source_node_py(
+                py,
+                ctx,
+                web_audio_api_rs::node::AudioBufferSourceOptions::default(),
+            ),
         }
     }
 
@@ -183,6 +206,9 @@ impl BaseAudioContext {
                 &*ctx.lock().unwrap(),
                 web_audio_api_rs::node::GainOptions::default(),
             ),
+            BaseAudioContextInner::Concrete(ctx) => {
+                gain_node_py(py, ctx, web_audio_api_rs::node::GainOptions::default())
+            }
         }
     }
 
@@ -199,6 +225,7 @@ impl BaseAudioContext {
             BaseAudioContextInner::Offline(ctx) => {
                 delay_node_py(py, &*ctx.lock().unwrap(), options)
             }
+            BaseAudioContextInner::Concrete(ctx) => delay_node_py(py, ctx, options),
         }
     }
 
@@ -213,6 +240,11 @@ impl BaseAudioContext {
             BaseAudioContextInner::Offline(ctx) => stereo_panner_node_py(
                 py,
                 &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::StereoPannerOptions::default(),
+            ),
+            BaseAudioContextInner::Concrete(ctx) => stereo_panner_node_py(
+                py,
+                ctx,
                 web_audio_api_rs::node::StereoPannerOptions::default(),
             ),
         }
@@ -235,6 +267,7 @@ impl BaseAudioContext {
             BaseAudioContextInner::Offline(ctx) => {
                 channel_merger_node_py(py, &*ctx.lock().unwrap(), options)
             }
+            BaseAudioContextInner::Concrete(ctx) => channel_merger_node_py(py, ctx, options),
         }
     }
 
@@ -255,6 +288,7 @@ impl BaseAudioContext {
             BaseAudioContextInner::Offline(ctx) => {
                 channel_splitter_node_py(py, &*ctx.lock().unwrap(), options)
             }
+            BaseAudioContextInner::Concrete(ctx) => channel_splitter_node_py(py, ctx, options),
         }
     }
 
@@ -269,6 +303,11 @@ impl BaseAudioContext {
             BaseAudioContextInner::Offline(ctx) => biquad_filter_node_py(
                 py,
                 &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::BiquadFilterOptions::default(),
+            ),
+            BaseAudioContextInner::Concrete(ctx) => biquad_filter_node_py(
+                py,
+                ctx,
                 web_audio_api_rs::node::BiquadFilterOptions::default(),
             ),
         }
@@ -319,30 +358,230 @@ impl OfflineAudioContext {
 #[pyclass(subclass)]
 struct AudioNode(Arc<Mutex<dyn RsAudioNode + Send + 'static>>);
 
-#[pymethods]
 impl AudioNode {
-    fn connect(&self, other: &Self) -> PyResult<()> {
+    fn connect_node(&self, other: &Self, output: usize, input: usize) -> PyResult<()> {
         if Arc::ptr_eq(&self.0, &other.0) {
             let node = lock_audio_node(&self.0)?;
             return catch_web_audio_panic(|| {
-                node.connect(&*node);
+                node.connect_from_output_to_input(&*node, output, input);
             });
         }
 
         let (source, destination) = lock_pair(&self.0, &other.0)?;
         catch_web_audio_panic(|| {
-            source.connect(&*destination);
+            source.connect_from_output_to_input(&*destination, output, input);
         })
     }
 
-    fn disconnect(&self, other: &Self) -> PyResult<()> {
+    fn disconnect_node(
+        &self,
+        other: &Self,
+        output: Option<usize>,
+        input: Option<usize>,
+    ) -> PyResult<()> {
         if Arc::ptr_eq(&self.0, &other.0) {
             let node = lock_audio_node(&self.0)?;
-            return catch_web_audio_panic(|| node.disconnect_dest(&*node));
+            return match (output, input) {
+                (None, None) => catch_web_audio_panic(|| node.disconnect_dest(&*node)),
+                (Some(output), None) => {
+                    catch_web_audio_panic(|| node.disconnect_dest_from_output(&*node, output))
+                }
+                (Some(output), Some(input)) => catch_web_audio_panic(|| {
+                    node.disconnect_dest_from_output_to_input(&*node, output, input)
+                }),
+                (None, Some(_)) => Err(pyo3::exceptions::PyTypeError::new_err(
+                    "disconnect(destinationNode, input) is not a valid overload",
+                )),
+            };
         }
 
         let (source, destination) = lock_pair(&self.0, &other.0)?;
-        catch_web_audio_panic(|| source.disconnect_dest(&*destination))
+        match (output, input) {
+            (None, None) => catch_web_audio_panic(|| source.disconnect_dest(&*destination)),
+            (Some(output), None) => {
+                catch_web_audio_panic(|| source.disconnect_dest_from_output(&*destination, output))
+            }
+            (Some(output), Some(input)) => catch_web_audio_panic(|| {
+                source.disconnect_dest_from_output_to_input(&*destination, output, input)
+            }),
+            (None, Some(_)) => Err(pyo3::exceptions::PyTypeError::new_err(
+                "disconnect(destinationNode, input) is not a valid overload",
+            )),
+        }
+    }
+}
+
+#[pymethods]
+impl AudioNode {
+    #[pyo3(signature = (destination, output=0, input=0))]
+    #[pyo3(name = "connect")]
+    fn py_connect(
+        &self,
+        py: Python<'_>,
+        destination: &Bound<'_, PyAny>,
+        output: usize,
+        input: usize,
+    ) -> PyResult<Py<PyAny>> {
+        if let Ok(other) = destination.extract::<PyRef<'_, AudioNode>>() {
+            self.connect_node(&other, output, input)?;
+            return Ok(destination.clone().unbind());
+        }
+
+        if let Ok(param) = destination.extract::<PyRef<'_, AudioParam>>() {
+            let source = lock_audio_node(&self.0)?;
+            catch_web_audio_panic(|| {
+                source.connect_from_output_to_input(&param.0, output, 0);
+            })?;
+            return Ok(py.None());
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "destination must be an AudioNode or AudioParam",
+        ))
+    }
+
+    #[getter]
+    fn context(&self, py: Python<'_>) -> PyResult<Py<BaseAudioContext>> {
+        let node = lock_audio_node(&self.0)?;
+        Py::new(
+            py,
+            BaseAudioContext::new(BaseAudioContextInner::Concrete(node.context().clone())),
+        )
+    }
+
+    #[getter(numberOfInputs)]
+    fn number_of_inputs(&self) -> PyResult<usize> {
+        let node = lock_audio_node(&self.0)?;
+        Ok(node.number_of_inputs())
+    }
+
+    #[getter(numberOfOutputs)]
+    fn number_of_outputs(&self) -> PyResult<usize> {
+        let node = lock_audio_node(&self.0)?;
+        Ok(node.number_of_outputs())
+    }
+
+    #[getter(channelCount)]
+    fn channel_count(&self) -> PyResult<usize> {
+        let node = lock_audio_node(&self.0)?;
+        Ok(node.channel_count())
+    }
+
+    #[setter(channelCount)]
+    fn set_channel_count(&self, value: usize) -> PyResult<()> {
+        let node = lock_audio_node(&self.0)?;
+        catch_web_audio_panic(|| node.set_channel_count(value))
+    }
+
+    #[getter(channelCountMode)]
+    fn channel_count_mode(&self) -> PyResult<&'static str> {
+        let node = lock_audio_node(&self.0)?;
+        Ok(channel_count_mode_to_str(node.channel_count_mode()))
+    }
+
+    #[setter(channelCountMode)]
+    fn set_channel_count_mode(&self, value: &str) -> PyResult<()> {
+        let value = channel_count_mode_from_str(value)?;
+        let node = lock_audio_node(&self.0)?;
+        catch_web_audio_panic(|| node.set_channel_count_mode(value))
+    }
+
+    #[getter(channelInterpretation)]
+    fn channel_interpretation(&self) -> PyResult<&'static str> {
+        let node = lock_audio_node(&self.0)?;
+        Ok(channel_interpretation_to_str(node.channel_interpretation()))
+    }
+
+    #[setter(channelInterpretation)]
+    fn set_channel_interpretation(&self, value: &str) -> PyResult<()> {
+        let value = channel_interpretation_from_str(value)?;
+        let node = lock_audio_node(&self.0)?;
+        catch_web_audio_panic(|| node.set_channel_interpretation(value))
+    }
+
+    #[pyo3(signature = (destination_or_output=None, output=None, input=None))]
+    #[pyo3(name = "disconnect")]
+    fn py_disconnect(
+        &self,
+        destination_or_output: Option<&Bound<'_, PyAny>>,
+        output: Option<usize>,
+        input: Option<usize>,
+    ) -> PyResult<()> {
+        let Some(destination_or_output) = destination_or_output else {
+            let node = lock_audio_node(&self.0)?;
+            return catch_web_audio_panic(|| node.disconnect());
+        };
+
+        if let Ok(output_only) = destination_or_output.extract::<usize>() {
+            if output.is_some() || input.is_some() {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "disconnect(output) does not accept destination output/input arguments",
+                ));
+            }
+
+            let node = lock_audio_node(&self.0)?;
+            return catch_web_audio_panic(|| node.disconnect_output(output_only));
+        }
+
+        if let Ok(other) = destination_or_output.extract::<PyRef<'_, AudioNode>>() {
+            return self.disconnect_node(&other, output, input);
+        }
+
+        if let Ok(param) = destination_or_output.extract::<PyRef<'_, AudioParam>>() {
+            if input.is_some() {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "disconnect(destinationParam, output, input) is not a valid overload",
+                ));
+            }
+
+            let source = lock_audio_node(&self.0)?;
+            return match output {
+                None => catch_web_audio_panic(|| source.disconnect_dest(&param.0)),
+                Some(output) => {
+                    catch_web_audio_panic(|| source.disconnect_dest_from_output(&param.0, output))
+                }
+            };
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "disconnect expects no arguments, an output index, an AudioNode, or an AudioParam",
+        ))
+    }
+}
+
+fn channel_count_mode_to_str(value: ChannelCountMode) -> &'static str {
+    match value {
+        ChannelCountMode::Max => "max",
+        ChannelCountMode::ClampedMax => "clamped-max",
+        ChannelCountMode::Explicit => "explicit",
+    }
+}
+
+fn channel_count_mode_from_str(value: &str) -> PyResult<ChannelCountMode> {
+    match value {
+        "max" => Ok(ChannelCountMode::Max),
+        "clamped-max" => Ok(ChannelCountMode::ClampedMax),
+        "explicit" => Ok(ChannelCountMode::Explicit),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "expected 'max', 'clamped-max', or 'explicit'",
+        )),
+    }
+}
+
+fn channel_interpretation_to_str(value: ChannelInterpretation) -> &'static str {
+    match value {
+        ChannelInterpretation::Speakers => "speakers",
+        ChannelInterpretation::Discrete => "discrete",
+    }
+}
+
+fn channel_interpretation_from_str(value: &str) -> PyResult<ChannelInterpretation> {
+    match value {
+        "speakers" => Ok(ChannelInterpretation::Speakers),
+        "discrete" => Ok(ChannelInterpretation::Discrete),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "expected 'speakers' or 'discrete'",
+        )),
     }
 }
 
@@ -1599,12 +1838,34 @@ mod tests {
     }
 
     #[test]
+    fn audio_node_shared_surface_works() {
+        let (ctx, _) = offline_context_parts(1, 128, 44_100.);
+        let (_, gain_node) = gain_node_parts(
+            &*ctx.0.lock().unwrap(),
+            web_audio_api_rs::node::GainOptions::default(),
+        );
+        assert_eq!(gain_node.number_of_inputs().unwrap(), 1);
+        assert_eq!(gain_node.number_of_outputs().unwrap(), 1);
+        assert_eq!(gain_node.channel_count().unwrap(), 2);
+        assert_eq!(gain_node.channel_count_mode().unwrap(), "max");
+        assert_eq!(gain_node.channel_interpretation().unwrap(), "speakers");
+
+        gain_node.set_channel_count(1).unwrap();
+        gain_node.set_channel_count_mode("explicit").unwrap();
+        gain_node.set_channel_interpretation("discrete").unwrap();
+
+        assert_eq!(gain_node.channel_count().unwrap(), 1);
+        assert_eq!(gain_node.channel_count_mode().unwrap(), "explicit");
+        assert_eq!(gain_node.channel_interpretation().unwrap(), "discrete");
+    }
+
+    #[test]
     fn oscillator_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (osc, scheduled, osc_node) = oscillator_node_parts(&*ctx.0.lock().unwrap());
         let destination = base.destination();
 
-        osc_node.connect(&destination).unwrap();
+        osc_node.connect_node(&destination, 0, 0).unwrap();
         osc.frequency().set_value(300.0).unwrap();
         assert_eq!(osc.frequency().value().unwrap(), 300.0);
 
@@ -1621,7 +1882,7 @@ mod tests {
             let (ctx, _) = offline_context_parts(1, 128, 44_100.);
             let (_, _, node) = oscillator_node_parts(&*ctx.0.lock().unwrap());
             let result = node
-                .connect(&node)
+                .connect_node(&node, 0, 0)
                 .is_err_and(|err| err.to_string().contains("input port 0 is out of bounds"));
             let _ = tx.send(result);
         });
@@ -1642,7 +1903,7 @@ mod tests {
         );
         let destination = base.destination();
 
-        src_node.connect(&destination).unwrap();
+        src_node.connect_node(&destination, 0, 0).unwrap();
         assert_eq!(src.offset().value().unwrap(), 2.);
 
         scheduled.start(0.0).unwrap();
@@ -1666,7 +1927,7 @@ mod tests {
         );
         let destination = base.destination();
 
-        src_node.connect(&destination).unwrap();
+        src_node.connect_node(&destination, 0, 0).unwrap();
         assert_eq!(src.playback_rate().value().unwrap(), 1.);
         assert_eq!(src.detune().value().unwrap(), 0.);
 
@@ -1686,7 +1947,7 @@ mod tests {
         );
         let destination = base.destination();
 
-        gain_node.connect(&destination).unwrap();
+        gain_node.connect_node(&destination, 0, 0).unwrap();
         assert_eq!(gain.gain().value().unwrap(), 0.5);
     }
 
@@ -1702,7 +1963,7 @@ mod tests {
         );
         let destination = base.destination();
 
-        delay_node.connect(&destination).unwrap();
+        delay_node.connect_node(&destination, 0, 0).unwrap();
         assert_eq!(delay.delay_time().value().unwrap(), 0.25);
     }
 
@@ -1718,7 +1979,7 @@ mod tests {
         );
         let destination = base.destination();
 
-        panner_node.connect(&destination).unwrap();
+        panner_node.connect_node(&destination, 0, 0).unwrap();
         assert_eq!(panner.pan().value().unwrap(), -0.5);
     }
 
@@ -1734,7 +1995,7 @@ mod tests {
         );
         let destination = base.destination();
 
-        merger_node.connect(&destination).unwrap();
+        merger_node.connect_node(&destination, 0, 0).unwrap();
     }
 
     #[test]
@@ -1749,7 +2010,7 @@ mod tests {
         );
         let destination = base.destination();
 
-        splitter_node.connect(&destination).unwrap();
+        splitter_node.connect_node(&destination, 0, 0).unwrap();
     }
 
     #[test]
@@ -1761,7 +2022,7 @@ mod tests {
         );
         let destination = base.destination();
 
-        filter_node.connect(&destination).unwrap();
+        filter_node.connect_node(&destination, 0, 0).unwrap();
         filter.set_type("highpass").unwrap();
         assert_eq!(filter.r#type(), "highpass");
         assert_eq!(filter.frequency().value().unwrap(), 350.);

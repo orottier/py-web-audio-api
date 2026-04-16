@@ -4,6 +4,41 @@ import web_audio_api
 
 
 class WebAudioApiSmokeTest(unittest.TestCase):
+    def test_audio_node_idl_surface_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        gain = web_audio_api.GainNode(ctx)
+
+        self.assertIsInstance(gain.context, web_audio_api.BaseAudioContext)
+        self.assertEqual(gain.context.sampleRate, 44_100.0)
+        self.assertEqual(gain.numberOfInputs, 1)
+        self.assertEqual(gain.numberOfOutputs, 1)
+        self.assertEqual(gain.channelCount, 2)
+        self.assertEqual(gain.channelCountMode, "max")
+        self.assertEqual(gain.channelInterpretation, "speakers")
+
+        gain.channelCount = 1
+        gain.channelCountMode = "explicit"
+        gain.channelInterpretation = "discrete"
+
+        self.assertEqual(gain.channelCount, 1)
+        self.assertEqual(gain.channelCountMode, "explicit")
+        self.assertEqual(gain.channelInterpretation, "discrete")
+
+    def test_audio_node_connect_and_disconnect_overloads_work(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        src = web_audio_api.ConstantSourceNode(ctx)
+        gain = web_audio_api.GainNode(ctx)
+
+        self.assertIs(src.connect(gain), gain)
+        src.disconnect(gain)
+
+        self.assertIsNone(src.connect(gain.gain))
+        src.disconnect(gain.gain)
+
+        self.assertIs(src.connect(gain, 0, 0), gain)
+        src.disconnect(gain, 0, 0)
+        src.disconnect()
+
     def test_base_audio_context_inheritance_and_shared_surface_work(self):
         audio_ctx = web_audio_api.AudioContext()
         offline_ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
