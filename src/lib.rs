@@ -893,6 +893,38 @@ fn audio_buffer_options(
     })
 }
 
+fn options_dict<'py>(
+    options: Option<&'py Bound<'py, PyAny>>,
+    type_name: &str,
+) -> PyResult<Option<&'py Bound<'py, PyDict>>> {
+    options
+        .map(|options| {
+            options.cast::<PyDict>().map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err(format!("{type_name} must be a dict"))
+            })
+        })
+        .transpose()
+}
+
+fn update_audio_node_options(
+    options: &Bound<'_, PyDict>,
+    parsed: &mut web_audio_api_rs::node::AudioNodeOptions,
+) -> PyResult<()> {
+    if let Some(channel_count) = options.get_item("channelCount")? {
+        parsed.channel_count = channel_count.extract()?;
+    }
+    if let Some(channel_count_mode) = options.get_item("channelCountMode")? {
+        parsed.channel_count_mode =
+            channel_count_mode_from_str(channel_count_mode.extract::<&str>()?)?;
+    }
+    if let Some(channel_interpretation) = options.get_item("channelInterpretation")? {
+        parsed.channel_interpretation =
+            channel_interpretation_from_str(channel_interpretation.extract::<&str>()?)?;
+    }
+
+    Ok(())
+}
+
 fn audio_context_latency_category_from_value(
     value: &Bound<'_, PyAny>,
 ) -> PyResult<web_audio_api_rs::context::AudioContextLatencyCategory> {
@@ -1521,13 +1553,11 @@ fn gain_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::GainOptions> {
     let mut parsed = web_audio_api_rs::node::GainOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "GainOptions")? else {
         return Ok(parsed);
     };
 
-    let options = options
-        .cast::<PyDict>()
-        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("GainOptions must be a dict"))?;
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
     if let Some(gain) = options.get_item("gain")? {
         parsed.gain = gain.extract()?;
@@ -1540,13 +1570,11 @@ fn analyser_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::AnalyserOptions> {
     let mut parsed = web_audio_api_rs::node::AnalyserOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "AnalyserOptions")? else {
         return Ok(parsed);
     };
 
-    let options = options
-        .cast::<PyDict>()
-        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("AnalyserOptions must be a dict"))?;
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
     if let Some(fft_size) = options.get_item("fftSize")? {
         parsed.fft_size = fft_size.extract()?;
@@ -1568,13 +1596,11 @@ fn convolver_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::ConvolverOptions> {
     let mut parsed = web_audio_api_rs::node::ConvolverOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "ConvolverOptions")? else {
         return Ok(parsed);
     };
 
-    let options = options
-        .cast::<PyDict>()
-        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("ConvolverOptions must be a dict"))?;
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
     if let Some(buffer) = options.get_item("buffer")? {
         if !buffer.is_none() {
@@ -1596,13 +1622,11 @@ fn dynamics_compressor_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::DynamicsCompressorOptions> {
     let mut parsed = web_audio_api_rs::node::DynamicsCompressorOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "DynamicsCompressorOptions")? else {
         return Ok(parsed);
     };
 
-    let options = options.cast::<PyDict>().map_err(|_| {
-        pyo3::exceptions::PyTypeError::new_err("DynamicsCompressorOptions must be a dict")
-    })?;
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
     if let Some(attack) = options.get_item("attack")? {
         parsed.attack = attack.extract()?;
@@ -1627,13 +1651,11 @@ fn delay_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::DelayOptions> {
     let mut parsed = web_audio_api_rs::node::DelayOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "DelayOptions")? else {
         return Ok(parsed);
     };
 
-    let options = options
-        .cast::<PyDict>()
-        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("DelayOptions must be a dict"))?;
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
     if let Some(max_delay_time) = options.get_item("maxDelayTime")? {
         parsed.max_delay_time = max_delay_time.extract()?;
@@ -1649,13 +1671,11 @@ fn stereo_panner_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::StereoPannerOptions> {
     let mut parsed = web_audio_api_rs::node::StereoPannerOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "StereoPannerOptions")? else {
         return Ok(parsed);
     };
 
-    let options = options.cast::<PyDict>().map_err(|_| {
-        pyo3::exceptions::PyTypeError::new_err("StereoPannerOptions must be a dict")
-    })?;
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
     if let Some(pan) = options.get_item("pan")? {
         parsed.pan = pan.extract()?;
@@ -1668,13 +1688,11 @@ fn channel_merger_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::ChannelMergerOptions> {
     let mut parsed = web_audio_api_rs::node::ChannelMergerOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "ChannelMergerOptions")? else {
         return Ok(parsed);
     };
 
-    let options = options.cast::<PyDict>().map_err(|_| {
-        pyo3::exceptions::PyTypeError::new_err("ChannelMergerOptions must be a dict")
-    })?;
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
     if let Some(number_of_inputs) = options.get_item("numberOfInputs")? {
         parsed.number_of_inputs = number_of_inputs.extract()?;
@@ -1687,13 +1705,11 @@ fn channel_splitter_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::ChannelSplitterOptions> {
     let mut parsed = web_audio_api_rs::node::ChannelSplitterOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "ChannelSplitterOptions")? else {
         return Ok(parsed);
     };
 
-    let options = options.cast::<PyDict>().map_err(|_| {
-        pyo3::exceptions::PyTypeError::new_err("ChannelSplitterOptions must be a dict")
-    })?;
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
     if let Some(number_of_outputs) = options.get_item("numberOfOutputs")? {
         parsed.number_of_outputs = number_of_outputs.extract()?;
@@ -1735,13 +1751,11 @@ fn biquad_filter_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::BiquadFilterOptions> {
     let mut parsed = web_audio_api_rs::node::BiquadFilterOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "BiquadFilterOptions")? else {
         return Ok(parsed);
     };
 
-    let options = options.cast::<PyDict>().map_err(|_| {
-        pyo3::exceptions::PyTypeError::new_err("BiquadFilterOptions must be a dict")
-    })?;
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
     if let Some(type_) = options.get_item("type")? {
         parsed.type_ = biquad_filter_type_from_str(type_.extract::<&str>()?)?;
@@ -1766,13 +1780,11 @@ fn oscillator_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::OscillatorOptions> {
     let mut parsed = web_audio_api_rs::node::OscillatorOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "OscillatorOptions")? else {
         return Ok(parsed);
     };
 
-    let options = options
-        .cast::<PyDict>()
-        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("OscillatorOptions must be a dict"))?;
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
     if let Some(type_) = options.get_item("type")? {
         parsed.type_ = oscillator_type_from_str(type_.extract::<&str>()?)?;

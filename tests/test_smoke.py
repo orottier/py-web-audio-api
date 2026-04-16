@@ -231,6 +231,52 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(configured_osc.frequency.value, 220.0)
         self.assertEqual(configured_osc.detune.value, 50.0)
 
+    def test_audio_node_options_are_accepted_in_inherited_option_dicts(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+
+        gain = web_audio_api.GainNode(
+            ctx,
+            {
+                "gain": 0.5,
+                "channelCount": 1,
+                "channelCountMode": "explicit",
+                "channelInterpretation": "discrete",
+            },
+        )
+        analyser = web_audio_api.AnalyserNode(
+            ctx,
+            {
+                "fftSize": 64,
+                "channelCount": 1,
+                "channelCountMode": "explicit",
+                "channelInterpretation": "discrete",
+            },
+        )
+        biquad = web_audio_api.BiquadFilterNode(
+            ctx,
+            {
+                "type": "highpass",
+                "channelCount": 1,
+                "channelCountMode": "explicit",
+                "channelInterpretation": "discrete",
+            },
+        )
+
+        for node in (gain, analyser, biquad):
+            self.assertEqual(node.channelCount, 1)
+            self.assertEqual(node.channelCountMode, "explicit")
+            self.assertEqual(node.channelInterpretation, "discrete")
+
+        self.assertEqual(gain.gain.value, 0.5)
+        self.assertEqual(analyser.fftSize, 64)
+        self.assertEqual(biquad.type, "highpass")
+
+    def test_invalid_shared_audio_node_option_value_raises(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+
+        with self.assertRaisesRegex(ValueError, "expected 'max', 'clamped-max', or 'explicit'"):
+            web_audio_api.GainNode(ctx, {"channelCountMode": "sideways"})
+
     def test_audio_param_methods_work(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         osc = web_audio_api.OscillatorNode(ctx)
