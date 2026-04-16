@@ -305,6 +305,34 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(len(mag), 2)
         self.assertEqual(len(phase), 2)
 
+    def test_wave_shaper_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        shaper = web_audio_api.WaveShaperNode(
+            ctx,
+            {
+                "curve": [-1.0, 0.0, 1.0],
+                "oversample": "2x",
+                "channelCount": 1,
+                "channelCountMode": "explicit",
+            },
+        )
+
+        self.assertIsInstance(shaper, web_audio_api.AudioNode)
+        self.assertEqual(shaper.curve, [-1.0, 0.0, 1.0])
+        self.assertEqual(shaper.oversample, "2x")
+        self.assertEqual(shaper.channelCount, 1)
+        self.assertEqual(shaper.channelCountMode, "explicit")
+
+    def test_create_wave_shaper_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        shaper = ctx.createWaveShaper()
+
+        self.assertIsNone(shaper.curve)
+        shaper.curve = [-0.5, 0.0, 0.5]
+        shaper.oversample = "4x"
+        self.assertEqual(shaper.curve, [-0.5, 0.0, 0.5])
+        self.assertEqual(shaper.oversample, "4x")
+
     def test_audio_param_methods_work(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         osc = web_audio_api.OscillatorNode(ctx)

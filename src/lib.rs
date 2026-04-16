@@ -333,6 +333,27 @@ impl BaseAudioContext {
         }
     }
 
+    #[pyo3(name = "createWaveShaper")]
+    fn create_wave_shaper(&self, py: Python<'_>) -> PyResult<Py<WaveShaperNode>> {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => wave_shaper_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::WaveShaperOptions::default(),
+            ),
+            BaseAudioContextInner::Offline(ctx) => wave_shaper_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::WaveShaperOptions::default(),
+            ),
+            BaseAudioContextInner::Concrete(ctx) => wave_shaper_node_py(
+                py,
+                ctx,
+                web_audio_api_rs::node::WaveShaperOptions::default(),
+            ),
+        }
+    }
+
     #[pyo3(name = "createChannelMerger", signature = (number_of_inputs=6))]
     fn create_channel_merger(
         &self,
@@ -1479,6 +1500,39 @@ fn iir_filter_node_py(
 }
 
 #[cfg(test)]
+fn wave_shaper_node_parts(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::WaveShaperOptions,
+) -> (WaveShaperNode, AudioNode) {
+    wrap_audio_node(
+        web_audio_api_rs::node::WaveShaperNode::new(ctx, options),
+        WaveShaperNode,
+    )
+}
+
+fn wave_shaper_node(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::WaveShaperOptions,
+) -> PyClassInitializer<WaveShaperNode> {
+    init_audio_node(
+        web_audio_api_rs::node::WaveShaperNode::new(ctx, options),
+        WaveShaperNode,
+    )
+}
+
+fn wave_shaper_node_py(
+    py: Python<'_>,
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::WaveShaperOptions,
+) -> PyResult<Py<WaveShaperNode>> {
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::WaveShaperNode::new(ctx, options),
+        WaveShaperNode,
+    )
+}
+
+#[cfg(test)]
 fn oscillator_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::OscillatorOptions,
@@ -1884,6 +1938,47 @@ fn iir_filter_options(
     };
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
+
+    Ok(parsed)
+}
+
+fn oversample_type_to_str(value: web_audio_api_rs::node::OverSampleType) -> &'static str {
+    match value {
+        web_audio_api_rs::node::OverSampleType::None => "none",
+        web_audio_api_rs::node::OverSampleType::X2 => "2x",
+        web_audio_api_rs::node::OverSampleType::X4 => "4x",
+    }
+}
+
+fn oversample_type_from_str(value: &str) -> PyResult<web_audio_api_rs::node::OverSampleType> {
+    match value {
+        "none" => Ok(web_audio_api_rs::node::OverSampleType::None),
+        "2x" => Ok(web_audio_api_rs::node::OverSampleType::X2),
+        "4x" => Ok(web_audio_api_rs::node::OverSampleType::X4),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "expected 'none', '2x', or '4x'",
+        )),
+    }
+}
+
+fn wave_shaper_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::WaveShaperOptions> {
+    let mut parsed = web_audio_api_rs::node::WaveShaperOptions::default();
+    let Some(options) = options_dict(options, "WaveShaperOptions")? else {
+        return Ok(parsed);
+    };
+
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
+
+    if let Some(curve) = options.get_item("curve")? {
+        if !curve.is_none() {
+            parsed.curve = Some(curve.extract()?);
+        }
+    }
+    if let Some(oversample) = options.get_item("oversample")? {
+        parsed.oversample = oversample_type_from_str(oversample.extract::<&str>()?)?;
+    }
 
     Ok(parsed)
 }
@@ -2654,6 +2749,60 @@ impl IIRFilterNode {
     }
 }
 
+#[pyclass(extends = AudioNode)]
+struct WaveShaperNode(Arc<Mutex<web_audio_api_rs::node::WaveShaperNode>>);
+
+#[pymethods]
+impl WaveShaperNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = wave_shaper_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(wave_shaper_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(wave_shaper_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[getter]
+    fn curve(&self) -> Option<Vec<f32>> {
+        self.0.lock().unwrap().curve().map(|curve| curve.to_vec())
+    }
+
+    #[setter]
+    fn set_curve(&mut self, value: Option<Vec<f32>>) -> PyResult<()> {
+        match value {
+            Some(curve) => catch_web_audio_panic(|| self.0.lock().unwrap().set_curve(curve)),
+            None => Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                "clearing WaveShaperNode.curve is not implemented yet",
+            )),
+        }
+    }
+
+    #[getter]
+    fn oversample(&self) -> String {
+        oversample_type_to_str(self.0.lock().unwrap().oversample()).to_owned()
+    }
+
+    #[setter]
+    fn set_oversample(&mut self, value: &str) -> PyResult<()> {
+        let value = oversample_type_from_str(value)?;
+        self.0.lock().unwrap().set_oversample(value);
+        Ok(())
+    }
+}
+
 #[pyclass(extends = AudioScheduledSourceNode)]
 struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 
@@ -2756,6 +2905,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ChannelSplitterNode>()?;
     m.add_class::<BiquadFilterNode>()?;
     m.add_class::<IIRFilterNode>()?;
+    m.add_class::<WaveShaperNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -3098,5 +3248,22 @@ mod tests {
 
         assert_eq!(mag.len(), 3);
         assert_eq!(phase.len(), 3);
+    }
+
+    #[test]
+    fn wave_shaper_graph_smoke_test() {
+        let (ctx, base) = offline_context_parts(1, 128, 44_100.);
+        let (mut shaper, shaper_node) = wave_shaper_node_parts(
+            &*ctx.0.lock().unwrap(),
+            web_audio_api_rs::node::WaveShaperOptions::default(),
+        );
+        let destination = base.destination_audio_node();
+
+        shaper_node.connect_node(&destination, 0, 0).unwrap();
+        shaper.set_curve(Some(vec![-1.0, 0.0, 1.0])).unwrap();
+        shaper.set_oversample("2x").unwrap();
+
+        assert_eq!(shaper.curve().unwrap(), [-1.0, 0.0, 1.0]);
+        assert_eq!(shaper.oversample(), "2x");
     }
 }
