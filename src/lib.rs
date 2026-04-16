@@ -51,6 +51,20 @@ impl AudioBuffer {
         catch_web_audio_panic_result(|| self.0.get_channel_data(channel_number).to_vec())
     }
 
+    #[pyo3(name = "copyFromChannel", signature = (destination, channel_number, buffer_offset=0))]
+    fn copy_from_channel(
+        &self,
+        mut destination: Vec<f32>,
+        channel_number: usize,
+        buffer_offset: usize,
+    ) -> PyResult<Vec<f32>> {
+        catch_web_audio_panic(|| {
+            self.0
+                .copy_from_channel_with_offset(&mut destination, channel_number, buffer_offset);
+        })?;
+        Ok(destination)
+    }
+
     #[pyo3(name = "copyToChannel", signature = (source, channel_number, buffer_offset=0))]
     fn copy_to_channel(
         &mut self,

@@ -136,6 +136,19 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             web_audio_api.AudioParam()
 
+    def test_audio_buffer_has_idl_shaped_copy_surface(self):
+        buffer = web_audio_api.AudioBuffer(
+            {"numberOfChannels": 2, "length": 8, "sampleRate": 8_000.0}
+        )
+
+        buffer.copyToChannel([1.0, 2.0, 3.0, 4.0], 0, 2)
+        buffer.copyToChannel([0.25, 0.5], 1)
+
+        self.assertEqual(buffer.getChannelData(0), [0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 0.0])
+        self.assertEqual(buffer.getChannelData(1), [0.25, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self.assertEqual(buffer.copyFromChannel([9.0, 9.0, 9.0], 0), [0.0, 0.0, 1.0])
+        self.assertEqual(buffer.copyFromChannel([9.0, 9.0, 9.0], 0, 3), [2.0, 3.0, 4.0])
+
     def test_self_connect_reports_rust_error(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         osc = web_audio_api.OscillatorNode(ctx)
