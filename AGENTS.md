@@ -4,7 +4,10 @@
 - This repo is a binding layer, not a place for audio-domain policy or validation that belongs in Rust.
 - Prefer synchronous bindings and small stubs over premature async/event/worklet design.
 - Preserve the current inheritance model (`BaseAudioContext`, `AudioScheduledSourceNode`, etc.) when adding surface.
-- Reuse the internal node factory helpers in `src/lib.rs` instead of open-coding new wrapper assembly.
+- Keep `src/lib.rs` thin: module declarations, top-level imports, the `#[pymodule]` registration, and tests belong there.
+- Put context-related code and parsing in `src/context.rs`, shared node/context substrate in `src/core.rs`, data objects in `src/data.rs`, and concrete node bindings in `src/nodes.rs`.
+- Keep internal helpers next to the code they support; do not reintroduce a generic `options.rs` or `wrappers.rs` dumping ground.
+- Reuse the internal node factory helpers in the related module instead of open-coding new wrapper assembly.
 - Reuse the shared option parsing helpers for `AudioNodeOptions` and per-type dict parsing; do not reintroduce one-off parsing patterns without a strong reason.
 - When testing wrapper types in Rust, exercise the wrapper's binding-shaped API, not the underlying raw Rust API with wrapper signatures mixed in. If the goal is to test raw crate behavior, test the raw crate object directly instead.
 - Keep direct constructors and `createX()` factories aligned where the IDL exposes both.
