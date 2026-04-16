@@ -5,6 +5,10 @@
 - Prefer synchronous bindings and small stubs over premature async/event/worklet design.
 - Preserve the current inheritance model (`BaseAudioContext`, `AudioScheduledSourceNode`, etc.) when adding surface.
 - Reuse the internal node factory helpers in `src/lib.rs` instead of open-coding new wrapper assembly.
+- Reuse the shared option parsing helpers for `AudioNodeOptions` and per-type dict parsing; do not reintroduce one-off parsing patterns without a strong reason.
+- When testing wrapper types in Rust, exercise the wrapper's binding-shaped API, not the underlying raw Rust API with wrapper signatures mixed in. If the goal is to test raw crate behavior, test the raw crate object directly instead.
+- Keep direct constructors and `createX()` factories aligned where the IDL exposes both.
+- Prefer explicit `NotImplementedError` stubs to misleading partial behavior when a spec feature depends on unmodeled async/event/media/worklet infrastructure.
 - For realtime tests, use `AudioContext({"sinkId": "none"})` so CI and local headless runs stay deterministic.
 - Before finishing, run:
   - `cargo fmt --check`
