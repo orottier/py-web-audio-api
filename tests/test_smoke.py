@@ -53,6 +53,45 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "input port 0 is out of bounds"):
             osc.connect(osc)
 
+    def test_constant_source_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        src = web_audio_api.ConstantSourceNode(ctx, {"offset": 2.0})
+
+        src.connect(ctx.destination)
+        self.assertEqual(src.offset.value, 2.0)
+
+        src.offset.value = 3.0
+        self.assertEqual(src.offset.value, 3.0)
+
+        src.start()
+        src.stop()
+
+    def test_create_constant_source_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        src = ctx.createConstantSource()
+
+        self.assertEqual(src.offset.value, 1.0)
+
+    def test_constant_source_renders_scheduled_samples_offline(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)
+        src = web_audio_api.ConstantSourceNode(ctx, {"offset": 0.25})
+
+        src.connect(ctx.destination)
+        src.start(0.25)
+        src.stop(0.75)
+
+        rendered = ctx.startRendering()
+        data = rendered.getChannelData(0)
+
+        self.assertEqual(rendered.numberOfChannels, 1)
+        self.assertEqual(rendered.length, 2000)
+        self.assertEqual(rendered.sampleRate, 2000.0)
+        self.assertEqual(rendered.duration, 1.0)
+        self.assertEqual(len(data), 2000)
+        self.assertTrue(all(sample == 0.0 for sample in data[:500]))
+        self.assertTrue(all(sample == 0.25 for sample in data[500:1501]))
+        self.assertTrue(all(sample == 0.0 for sample in data[1501:]))
+
 
 if __name__ == "__main__":
     unittest.main()

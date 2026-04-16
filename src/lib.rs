@@ -1,4 +1,5 @@
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyDictMethods};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -7,6 +8,37 @@ use web_audio_api_rs::node::{AudioNode as RsAudioNode, AudioScheduledSourceNode 
 use web_audio_api_rs::AutomationRate;
 
 static PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
+
+#[pyclass]
+struct AudioBuffer(web_audio_api_rs::AudioBuffer);
+
+#[pymethods]
+impl AudioBuffer {
+    #[getter(numberOfChannels)]
+    fn number_of_channels(&self) -> usize {
+        self.0.number_of_channels()
+    }
+
+    #[getter]
+    fn length(&self) -> usize {
+        self.0.length()
+    }
+
+    #[getter(sampleRate)]
+    fn sample_rate(&self) -> f32 {
+        self.0.sample_rate()
+    }
+
+    #[getter]
+    fn duration(&self) -> f64 {
+        self.0.duration()
+    }
+
+    #[pyo3(name = "getChannelData")]
+    fn get_channel_data(&self, channel_number: usize) -> PyResult<Vec<f32>> {
+        catch_web_audio_panic_result(|| self.0.get_channel_data(channel_number).to_vec())
+    }
+}
 
 #[pyclass]
 struct AudioContext(web_audio_api_rs::context::AudioContext);
@@ -26,6 +58,15 @@ impl AudioContext {
     #[pyo3(name = "createOscillator")]
     fn create_oscillator(&self, py: Python<'_>) -> PyResult<Py<OscillatorNode>> {
         oscillator_node_py(py, &self.0)
+    }
+
+    #[pyo3(name = "createConstantSource")]
+    fn create_constant_source(&self, py: Python<'_>) -> PyResult<Py<ConstantSourceNode>> {
+        constant_source_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::ConstantSourceOptions::default(),
+        )
     }
 }
 
@@ -51,6 +92,20 @@ impl OfflineAudioContext {
     #[pyo3(name = "createOscillator")]
     fn create_oscillator(&self, py: Python<'_>) -> PyResult<Py<OscillatorNode>> {
         oscillator_node_py(py, &self.0)
+    }
+
+    #[pyo3(name = "createConstantSource")]
+    fn create_constant_source(&self, py: Python<'_>) -> PyResult<Py<ConstantSourceNode>> {
+        constant_source_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::ConstantSourceOptions::default(),
+        )
+    }
+
+    #[pyo3(name = "startRendering")]
+    fn start_rendering(&mut self) -> PyResult<AudioBuffer> {
+        catch_web_audio_panic_result(|| AudioBuffer(self.0.start_rendering_sync()))
     }
 }
 
@@ -117,6 +172,10 @@ fn lock_pair<'a>(
 }
 
 fn catch_web_audio_panic(f: impl FnOnce()) -> PyResult<()> {
+    catch_web_audio_panic_result(f)
+}
+
+fn catch_web_audio_panic_result<T>(f: impl FnOnce() -> T) -> PyResult<T> {
     let _guard = PANIC_HOOK_LOCK.lock().map_err(|_| {
         pyo3::exceptions::PyRuntimeError::new_err(
             "panic hook lock was poisoned by a previous panic",
@@ -154,6 +213,44 @@ fn oscillator_node(ctx: &impl BaseAudioContext) -> (OscillatorNode, AudioNode) {
 fn oscillator_node_py(py: Python<'_>, ctx: &impl BaseAudioContext) -> PyResult<Py<OscillatorNode>> {
     let (osc, base) = oscillator_node(ctx);
     Py::new(py, (osc, base))
+}
+
+fn constant_source_node(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::ConstantSourceOptions,
+) -> (ConstantSourceNode, AudioNode) {
+    let node = web_audio_api_rs::node::ConstantSourceNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (ConstantSourceNode(node), AudioNode(audio_node))
+}
+
+fn constant_source_node_py(
+    py: Python<'_>,
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::ConstantSourceOptions,
+) -> PyResult<Py<ConstantSourceNode>> {
+    let (node, base) = constant_source_node(ctx, options);
+    Py::new(py, (node, base))
+}
+
+fn constant_source_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::ConstantSourceOptions> {
+    let mut parsed = web_audio_api_rs::node::ConstantSourceOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err("ConstantSourceOptions must be a dict")
+    })?;
+
+    if let Some(offset) = options.get_item("offset")? {
+        parsed.offset = offset.extract()?;
+    }
+
+    Ok(parsed)
 }
 
 fn automation_rate_to_str(value: AutomationRate) -> &'static str {
@@ -366,13 +463,57 @@ impl OscillatorNode {
     }
 }
 
+#[pyclass(extends = AudioNode)]
+struct ConstantSourceNode(Arc<Mutex<web_audio_api_rs::node::ConstantSourceNode>>);
+
+#[pymethods]
+impl ConstantSourceNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<(Self, AudioNode)> {
+        let options = constant_source_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(constant_source_node(&ctx.0, options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(constant_source_node(&ctx.0, options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[pyo3(signature = (when=0.0))]
+    fn start(&mut self, when: f64) {
+        self.0.lock().unwrap().start_at(when)
+    }
+
+    #[pyo3(signature = (when=0.0))]
+    fn stop(&mut self, when: f64) {
+        self.0.lock().unwrap().stop_at(when)
+    }
+
+    #[getter]
+    fn offset(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().offset().clone())
+    }
+}
+
 /// A Python module implemented in Rust.
 #[pymodule]
 fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioContext>()?;
     m.add_class::<OfflineAudioContext>()?;
+    m.add_class::<AudioBuffer>()?;
     m.add_class::<AudioNode>()?;
     m.add_class::<OscillatorNode>()?;
+    m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
     Ok(())
 }
@@ -416,5 +557,21 @@ mod tests {
             Ok(true),
             "self connect did not complete before the timeout"
         );
+    }
+
+    #[test]
+    fn constant_source_graph_smoke_test() {
+        let ctx = OfflineAudioContext::new(1, 128, 44_100.);
+        let (mut src, src_node) = constant_source_node(
+            &ctx.0,
+            web_audio_api_rs::node::ConstantSourceOptions { offset: 2. },
+        );
+        let destination = ctx.destination();
+
+        src_node.connect(&destination).unwrap();
+        assert_eq!(src.offset().value().unwrap(), 2.);
+
+        src.start(0.0);
+        src.stop(0.0);
     }
 }
