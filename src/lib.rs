@@ -14,6 +14,13 @@ struct AudioBuffer(web_audio_api_rs::AudioBuffer);
 
 #[pymethods]
 impl AudioBuffer {
+    #[new]
+    fn new(options: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self(web_audio_api_rs::AudioBuffer::new(
+            audio_buffer_options(options)?,
+        )))
+    }
+
     #[getter(numberOfChannels)]
     fn number_of_channels(&self) -> usize {
         self.0.number_of_channels()
@@ -37,6 +44,19 @@ impl AudioBuffer {
     #[pyo3(name = "getChannelData")]
     fn get_channel_data(&self, channel_number: usize) -> PyResult<Vec<f32>> {
         catch_web_audio_panic_result(|| self.0.get_channel_data(channel_number).to_vec())
+    }
+
+    #[pyo3(name = "copyToChannel", signature = (source, channel_number, buffer_offset=0))]
+    fn copy_to_channel(
+        &mut self,
+        source: Vec<f32>,
+        channel_number: usize,
+        buffer_offset: usize,
+    ) -> PyResult<()> {
+        catch_web_audio_panic(|| {
+            self.0
+                .copy_to_channel_with_offset(&source, channel_number, buffer_offset);
+        })
     }
 }
 
@@ -66,6 +86,15 @@ impl AudioContext {
             py,
             &self.0,
             web_audio_api_rs::node::ConstantSourceOptions::default(),
+        )
+    }
+
+    #[pyo3(name = "createBufferSource")]
+    fn create_buffer_source(&self, py: Python<'_>) -> PyResult<Py<AudioBufferSourceNode>> {
+        audio_buffer_source_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::AudioBufferSourceOptions::default(),
         )
     }
 }
@@ -100,6 +129,15 @@ impl OfflineAudioContext {
             py,
             &self.0,
             web_audio_api_rs::node::ConstantSourceOptions::default(),
+        )
+    }
+
+    #[pyo3(name = "createBufferSource")]
+    fn create_buffer_source(&self, py: Python<'_>) -> PyResult<Py<AudioBufferSourceNode>> {
+        audio_buffer_source_node_py(
+            py,
+            &self.0,
+            web_audio_api_rs::node::AudioBufferSourceOptions::default(),
         )
     }
 
@@ -203,7 +241,40 @@ fn destination_node(ctx: &impl BaseAudioContext) -> AudioNode {
     AudioNode(node)
 }
 
+fn audio_buffer_options(
+    options: &Bound<'_, PyAny>,
+) -> PyResult<web_audio_api_rs::AudioBufferOptions> {
+    let options = options
+        .cast::<PyDict>()
+        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("AudioBufferOptions must be a dict"))?;
+
+    let number_of_channels = options
+        .get_item("numberOfChannels")?
+        .map(|value| value.extract())
+        .transpose()?
+        .unwrap_or(1);
+    let length = options
+        .get_item("length")?
+        .ok_or_else(|| {
+            pyo3::exceptions::PyTypeError::new_err("AudioBufferOptions.length is required")
+        })?
+        .extract()?;
+    let sample_rate = options
+        .get_item("sampleRate")?
+        .ok_or_else(|| {
+            pyo3::exceptions::PyTypeError::new_err("AudioBufferOptions.sampleRate is required")
+        })?
+        .extract()?;
+
+    Ok(web_audio_api_rs::AudioBufferOptions {
+        number_of_channels,
+        length,
+        sample_rate,
+    })
+}
+
 enum ScheduledSourceInner {
+    AudioBufferSource(Arc<Mutex<web_audio_api_rs::node::AudioBufferSourceNode>>),
     Oscillator(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>),
     ConstantSource(Arc<Mutex<web_audio_api_rs::node::ConstantSourceNode>>),
 }
@@ -211,6 +282,9 @@ enum ScheduledSourceInner {
 impl ScheduledSourceInner {
     fn start_at(&self, when: f64) -> PyResult<()> {
         match self {
+            Self::AudioBufferSource(node) => {
+                catch_web_audio_panic(|| node.lock().unwrap().start_at(when))
+            }
             Self::Oscillator(node) => catch_web_audio_panic(|| node.lock().unwrap().start_at(when)),
             Self::ConstantSource(node) => {
                 catch_web_audio_panic(|| node.lock().unwrap().start_at(when))
@@ -220,12 +294,47 @@ impl ScheduledSourceInner {
 
     fn stop_at(&self, when: f64) -> PyResult<()> {
         match self {
+            Self::AudioBufferSource(node) => {
+                catch_web_audio_panic(|| node.lock().unwrap().stop_at(when))
+            }
             Self::Oscillator(node) => catch_web_audio_panic(|| node.lock().unwrap().stop_at(when)),
             Self::ConstantSource(node) => {
                 catch_web_audio_panic(|| node.lock().unwrap().stop_at(when))
             }
         }
     }
+}
+
+fn audio_buffer_source_node_parts(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::AudioBufferSourceOptions,
+) -> (AudioBufferSourceNode, AudioScheduledSourceNode, AudioNode) {
+    let node = web_audio_api_rs::node::AudioBufferSourceNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (
+        AudioBufferSourceNode(Arc::clone(&node)),
+        AudioScheduledSourceNode::new(ScheduledSourceInner::AudioBufferSource(node)),
+        AudioNode(audio_node),
+    )
+}
+
+fn audio_buffer_source_node(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::AudioBufferSourceOptions,
+) -> PyClassInitializer<AudioBufferSourceNode> {
+    let (node, scheduled, base) = audio_buffer_source_node_parts(ctx, options);
+    PyClassInitializer::from(base)
+        .add_subclass(scheduled)
+        .add_subclass(node)
+}
+
+fn audio_buffer_source_node_py(
+    py: Python<'_>,
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::AudioBufferSourceOptions,
+) -> PyResult<Py<AudioBufferSourceNode>> {
+    Py::new(py, audio_buffer_source_node(ctx, options))
 }
 
 fn oscillator_node_parts(
@@ -298,6 +407,42 @@ fn constant_source_options(
 
     if let Some(offset) = options.get_item("offset")? {
         parsed.offset = offset.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn audio_buffer_source_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::AudioBufferSourceOptions> {
+    let mut parsed = web_audio_api_rs::node::AudioBufferSourceOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err("AudioBufferSourceOptions must be a dict")
+    })?;
+
+    if let Some(buffer) = options.get_item("buffer")? {
+        if !buffer.is_none() {
+            parsed.buffer = Some(buffer.extract::<PyRef<'_, AudioBuffer>>()?.0.clone());
+        }
+    }
+    if let Some(detune) = options.get_item("detune")? {
+        parsed.detune = detune.extract()?;
+    }
+    if let Some(loop_) = options.get_item("loop")? {
+        parsed.loop_ = loop_.extract()?;
+    }
+    if let Some(loop_end) = options.get_item("loopEnd")? {
+        parsed.loop_end = loop_end.extract()?;
+    }
+    if let Some(loop_start) = options.get_item("loopStart")? {
+        parsed.loop_start = loop_start.extract()?;
+    }
+    if let Some(playback_rate) = options.get_item("playbackRate")? {
+        parsed.playback_rate = playback_rate.extract()?;
     }
 
     Ok(parsed)
@@ -503,6 +648,103 @@ impl AudioScheduledSourceNode {
 }
 
 #[pyclass(extends = AudioScheduledSourceNode)]
+struct AudioBufferSourceNode(Arc<Mutex<web_audio_api_rs::node::AudioBufferSourceNode>>);
+
+#[pymethods]
+impl AudioBufferSourceNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = audio_buffer_source_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(audio_buffer_source_node(&ctx.0, options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(audio_buffer_source_node(&ctx.0, options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[getter]
+    fn buffer(&self) -> Option<AudioBuffer> {
+        self.0.lock().unwrap().buffer().cloned().map(AudioBuffer)
+    }
+
+    #[setter]
+    fn set_buffer(&mut self, value: Option<PyRef<'_, AudioBuffer>>) -> PyResult<()> {
+        if let Some(buffer) = value {
+            catch_web_audio_panic(|| {
+                self.0.lock().unwrap().set_buffer(buffer.0.clone());
+            })?;
+        }
+        Ok(())
+    }
+
+    #[getter(playbackRate)]
+    fn playback_rate(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().playback_rate().clone())
+    }
+
+    #[getter]
+    fn detune(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().detune().clone())
+    }
+
+    #[getter(r#loop)]
+    fn r#loop(&self) -> bool {
+        self.0.lock().unwrap().loop_()
+    }
+
+    #[setter(r#loop)]
+    fn set_loop(&mut self, value: bool) {
+        self.0.lock().unwrap().set_loop(value)
+    }
+
+    #[getter(loopStart)]
+    fn loop_start(&self) -> f64 {
+        self.0.lock().unwrap().loop_start()
+    }
+
+    #[setter(loopStart)]
+    fn set_loop_start(&mut self, value: f64) {
+        self.0.lock().unwrap().set_loop_start(value)
+    }
+
+    #[getter(loopEnd)]
+    fn loop_end(&self) -> f64 {
+        self.0.lock().unwrap().loop_end()
+    }
+
+    #[setter(loopEnd)]
+    fn set_loop_end(&mut self, value: f64) {
+        self.0.lock().unwrap().set_loop_end(value)
+    }
+
+    #[pyo3(signature = (when=0.0, offset=None, duration=None))]
+    fn start(&self, when: f64, offset: Option<f64>, duration: Option<f64>) -> PyResult<()> {
+        let offset = offset.unwrap_or(0.0);
+        catch_web_audio_panic(|| {
+            let mut node = self.0.lock().unwrap();
+            if let Some(duration) = duration {
+                node.start_at_with_offset_and_duration(when, offset, duration);
+            } else if offset == 0.0 {
+                node.start_at(when);
+            } else {
+                node.start_at_with_offset(when, offset);
+            }
+        })
+    }
+}
+
+#[pyclass(extends = AudioScheduledSourceNode)]
 struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 
 #[pymethods]
@@ -584,6 +826,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioBuffer>()?;
     m.add_class::<AudioNode>()?;
     m.add_class::<AudioScheduledSourceNode>()?;
+    m.add_class::<AudioBufferSourceNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -642,6 +885,31 @@ mod tests {
 
         src_node.connect(&destination).unwrap();
         assert_eq!(src.offset().value().unwrap(), 2.);
+
+        scheduled.start(0.0).unwrap();
+        scheduled.stop(0.0).unwrap();
+    }
+
+    #[test]
+    fn audio_buffer_source_graph_smoke_test() {
+        let ctx = OfflineAudioContext::new(1, 128, 44_100.);
+        let buffer = web_audio_api_rs::AudioBuffer::new(web_audio_api_rs::AudioBufferOptions {
+            number_of_channels: 1,
+            length: 128,
+            sample_rate: 44_100.,
+        });
+        let (src, scheduled, src_node) = audio_buffer_source_node_parts(
+            &ctx.0,
+            web_audio_api_rs::node::AudioBufferSourceOptions {
+                buffer: Some(buffer),
+                ..Default::default()
+            },
+        );
+        let destination = ctx.destination();
+
+        src_node.connect(&destination).unwrap();
+        assert_eq!(src.playback_rate().value().unwrap(), 1.);
+        assert_eq!(src.detune().value().unwrap(), 0.);
 
         scheduled.start(0.0).unwrap();
         scheduled.stop(0.0).unwrap();

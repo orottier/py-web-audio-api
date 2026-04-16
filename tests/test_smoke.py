@@ -109,6 +109,53 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertTrue(all(sample == 0.25 for sample in data[500:1501]))
         self.assertTrue(all(sample == 0.0 for sample in data[1501:]))
 
+    def test_audio_buffer_source_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        buffer = web_audio_api.AudioBuffer(
+            {"numberOfChannels": 1, "length": 128, "sampleRate": 44_100.0}
+        )
+        src = web_audio_api.AudioBufferSourceNode(ctx, {"buffer": buffer})
+
+        self.assertIsInstance(src, web_audio_api.AudioScheduledSourceNode)
+        self.assertIsInstance(src, web_audio_api.AudioNode)
+        self.assertEqual(src.buffer.length, 128)
+        self.assertEqual(src.playbackRate.value, 1.0)
+        self.assertEqual(src.detune.value, 0.0)
+        self.assertFalse(src.loop)
+
+        src.loop = True
+        src.loopStart = 0.25
+        src.loopEnd = 0.5
+        self.assertTrue(src.loop)
+        self.assertEqual(src.loopStart, 0.25)
+        self.assertEqual(src.loopEnd, 0.5)
+
+        src.connect(ctx.destination)
+        src.start()
+        src.stop()
+
+    def test_create_buffer_source_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        src = ctx.createBufferSource()
+
+        self.assertIsNone(src.buffer)
+
+    def test_audio_buffer_source_renders_samples_offline(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)
+        buffer = web_audio_api.AudioBuffer(
+            {"numberOfChannels": 1, "length": 2000, "sampleRate": 2000.0}
+        )
+        buffer.copyToChannel([0.125] * 1000 + [0.25] * 1000, 0)
+        src = web_audio_api.AudioBufferSourceNode(ctx)
+
+        src.buffer = buffer
+        src.connect(ctx.destination)
+        src.start()
+
+        data = ctx.startRendering().getChannelData(0)
+        self.assertTrue(all(sample == 0.125 for sample in data[:1000]))
+        self.assertTrue(all(sample == 0.25 for sample in data[1000:]))
+
 
 if __name__ == "__main__":
     unittest.main()
