@@ -8,6 +8,9 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         osc = ctx.createOscillator()
 
+        self.assertIsInstance(osc, web_audio_api.AudioScheduledSourceNode)
+        self.assertIsInstance(osc, web_audio_api.AudioNode)
+
         osc.connect(ctx.destination)
         osc.frequency.value = 300.0
 
@@ -57,6 +60,9 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         src = web_audio_api.ConstantSourceNode(ctx, {"offset": 2.0})
 
+        self.assertIsInstance(src, web_audio_api.AudioScheduledSourceNode)
+        self.assertIsInstance(src, web_audio_api.AudioNode)
+
         src.connect(ctx.destination)
         self.assertEqual(src.offset.value, 2.0)
 
@@ -71,6 +77,17 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         src = ctx.createConstantSource()
 
         self.assertEqual(src.offset.value, 1.0)
+
+    def test_audio_scheduled_source_node_onended_property_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        osc = web_audio_api.OscillatorNode(ctx)
+        marker = object()
+
+        self.assertIsNone(osc.onended)
+        osc.onended = marker
+        self.assertIs(osc.onended, marker)
+        osc.onended = None
+        self.assertIsNone(osc.onended)
 
     def test_constant_source_renders_scheduled_samples_offline(self):
         ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)

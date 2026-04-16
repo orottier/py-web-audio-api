@@ -203,26 +203,77 @@ fn destination_node(ctx: &impl BaseAudioContext) -> AudioNode {
     AudioNode(node)
 }
 
-fn oscillator_node(ctx: &impl BaseAudioContext) -> (OscillatorNode, AudioNode) {
+enum ScheduledSourceInner {
+    Oscillator(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>),
+    ConstantSource(Arc<Mutex<web_audio_api_rs::node::ConstantSourceNode>>),
+}
+
+impl ScheduledSourceInner {
+    fn start_at(&self, when: f64) -> PyResult<()> {
+        match self {
+            Self::Oscillator(node) => catch_web_audio_panic(|| node.lock().unwrap().start_at(when)),
+            Self::ConstantSource(node) => {
+                catch_web_audio_panic(|| node.lock().unwrap().start_at(when))
+            }
+        }
+    }
+
+    fn stop_at(&self, when: f64) -> PyResult<()> {
+        match self {
+            Self::Oscillator(node) => catch_web_audio_panic(|| node.lock().unwrap().stop_at(when)),
+            Self::ConstantSource(node) => {
+                catch_web_audio_panic(|| node.lock().unwrap().stop_at(when))
+            }
+        }
+    }
+}
+
+fn oscillator_node_parts(
+    ctx: &impl BaseAudioContext,
+) -> (OscillatorNode, AudioScheduledSourceNode, AudioNode) {
     let osc = ctx.create_oscillator();
     let node = Arc::new(Mutex::new(osc));
     let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (OscillatorNode(node), AudioNode(audio_node))
+    (
+        OscillatorNode(Arc::clone(&node)),
+        AudioScheduledSourceNode::new(ScheduledSourceInner::Oscillator(node)),
+        AudioNode(audio_node),
+    )
+}
+
+fn oscillator_node(ctx: &impl BaseAudioContext) -> PyClassInitializer<OscillatorNode> {
+    let (osc, scheduled, base) = oscillator_node_parts(ctx);
+    PyClassInitializer::from(base)
+        .add_subclass(scheduled)
+        .add_subclass(osc)
 }
 
 fn oscillator_node_py(py: Python<'_>, ctx: &impl BaseAudioContext) -> PyResult<Py<OscillatorNode>> {
-    let (osc, base) = oscillator_node(ctx);
-    Py::new(py, (osc, base))
+    Py::new(py, oscillator_node(ctx))
+}
+
+fn constant_source_node_parts(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::ConstantSourceOptions,
+) -> (ConstantSourceNode, AudioScheduledSourceNode, AudioNode) {
+    let node = web_audio_api_rs::node::ConstantSourceNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (
+        ConstantSourceNode(Arc::clone(&node)),
+        AudioScheduledSourceNode::new(ScheduledSourceInner::ConstantSource(node)),
+        AudioNode(audio_node),
+    )
 }
 
 fn constant_source_node(
     ctx: &impl BaseAudioContext,
     options: web_audio_api_rs::node::ConstantSourceOptions,
-) -> (ConstantSourceNode, AudioNode) {
-    let node = web_audio_api_rs::node::ConstantSourceNode::new(ctx, options);
-    let node = Arc::new(Mutex::new(node));
-    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (ConstantSourceNode(node), AudioNode(audio_node))
+) -> PyClassInitializer<ConstantSourceNode> {
+    let (node, scheduled, base) = constant_source_node_parts(ctx, options);
+    PyClassInitializer::from(base)
+        .add_subclass(scheduled)
+        .add_subclass(node)
 }
 
 fn constant_source_node_py(
@@ -230,8 +281,7 @@ fn constant_source_node_py(
     ctx: &impl BaseAudioContext,
     options: web_audio_api_rs::node::ConstantSourceOptions,
 ) -> PyResult<Py<ConstantSourceNode>> {
-    let (node, base) = constant_source_node(ctx, options);
-    Py::new(py, (node, base))
+    Py::new(py, constant_source_node(ctx, options))
 }
 
 fn constant_source_options(
@@ -411,13 +461,54 @@ impl AudioParam {
     }
 }
 
-#[pyclass(extends = AudioNode)]
+#[pyclass(extends = AudioNode, subclass)]
+struct AudioScheduledSourceNode {
+    inner: ScheduledSourceInner,
+    onended: Option<Py<PyAny>>,
+}
+
+impl AudioScheduledSourceNode {
+    fn new(inner: ScheduledSourceInner) -> Self {
+        Self {
+            inner,
+            onended: None,
+        }
+    }
+}
+
+#[pymethods]
+impl AudioScheduledSourceNode {
+    #[pyo3(signature = (when=0.0))]
+    fn start(&self, when: f64) -> PyResult<()> {
+        self.inner.start_at(when)
+    }
+
+    #[pyo3(signature = (when=0.0))]
+    fn stop(&self, when: f64) -> PyResult<()> {
+        self.inner.stop_at(when)
+    }
+
+    #[getter]
+    fn onended(&self, py: Python<'_>) -> Py<PyAny> {
+        self.onended
+            .as_ref()
+            .map(|onended| onended.clone_ref(py))
+            .unwrap_or_else(|| py.None())
+    }
+
+    #[setter]
+    fn set_onended(&mut self, value: Option<Py<PyAny>>) {
+        self.onended = value;
+    }
+}
+
+#[pyclass(extends = AudioScheduledSourceNode)]
 struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 
 #[pymethods]
 impl OscillatorNode {
     #[new]
-    fn new(ctx: &Bound<'_, PyAny>) -> PyResult<(Self, AudioNode)> {
+    fn new(ctx: &Bound<'_, PyAny>) -> PyResult<PyClassInitializer<Self>> {
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
             return Ok(oscillator_node(&ctx.0));
         }
@@ -429,16 +520,6 @@ impl OscillatorNode {
         Err(pyo3::exceptions::PyTypeError::new_err(
             "expected AudioContext or OfflineAudioContext",
         ))
-    }
-
-    #[pyo3(signature = (when=0.0))]
-    fn start(&mut self, when: f64) {
-        self.0.lock().unwrap().start_at(when)
-    }
-
-    #[pyo3(signature = (when=0.0))]
-    fn stop(&mut self, when: f64) {
-        self.0.lock().unwrap().stop_at(when)
     }
 
     #[getter]
@@ -463,7 +544,7 @@ impl OscillatorNode {
     }
 }
 
-#[pyclass(extends = AudioNode)]
+#[pyclass(extends = AudioScheduledSourceNode)]
 struct ConstantSourceNode(Arc<Mutex<web_audio_api_rs::node::ConstantSourceNode>>);
 
 #[pymethods]
@@ -473,7 +554,7 @@ impl ConstantSourceNode {
     fn new(
         ctx: &Bound<'_, PyAny>,
         options: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<(Self, AudioNode)> {
+    ) -> PyResult<PyClassInitializer<Self>> {
         let options = constant_source_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
@@ -489,16 +570,6 @@ impl ConstantSourceNode {
         ))
     }
 
-    #[pyo3(signature = (when=0.0))]
-    fn start(&mut self, when: f64) {
-        self.0.lock().unwrap().start_at(when)
-    }
-
-    #[pyo3(signature = (when=0.0))]
-    fn stop(&mut self, when: f64) {
-        self.0.lock().unwrap().stop_at(when)
-    }
-
     #[getter]
     fn offset(&self) -> AudioParam {
         AudioParam(self.0.lock().unwrap().offset().clone())
@@ -512,6 +583,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<OfflineAudioContext>()?;
     m.add_class::<AudioBuffer>()?;
     m.add_class::<AudioNode>()?;
+    m.add_class::<AudioScheduledSourceNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -527,15 +599,15 @@ mod tests {
     #[test]
     fn oscillator_graph_smoke_test() {
         let ctx = OfflineAudioContext::new(1, 128, 44_100.);
-        let (mut osc, osc_node) = oscillator_node(&ctx.0);
+        let (osc, scheduled, osc_node) = oscillator_node_parts(&ctx.0);
         let destination = ctx.destination();
 
         osc_node.connect(&destination).unwrap();
         osc.frequency().set_value(300.0).unwrap();
         assert_eq!(osc.frequency().value().unwrap(), 300.0);
 
-        osc.start(0.0);
-        osc.stop(0.0);
+        scheduled.start(0.0).unwrap();
+        scheduled.stop(0.0).unwrap();
     }
 
     #[test]
@@ -545,7 +617,7 @@ mod tests {
 
         std::thread::spawn(move || {
             let ctx = OfflineAudioContext::new(1, 128, 44_100.);
-            let (_, node) = oscillator_node(&ctx.0);
+            let (_, _, node) = oscillator_node_parts(&ctx.0);
             let result = node
                 .connect(&node)
                 .is_err_and(|err| err.to_string().contains("input port 0 is out of bounds"));
@@ -562,7 +634,7 @@ mod tests {
     #[test]
     fn constant_source_graph_smoke_test() {
         let ctx = OfflineAudioContext::new(1, 128, 44_100.);
-        let (mut src, src_node) = constant_source_node(
+        let (src, scheduled, src_node) = constant_source_node_parts(
             &ctx.0,
             web_audio_api_rs::node::ConstantSourceOptions { offset: 2. },
         );
@@ -571,7 +643,7 @@ mod tests {
         src_node.connect(&destination).unwrap();
         assert_eq!(src.offset().value().unwrap(), 2.);
 
-        src.start(0.0);
-        src.stop(0.0);
+        scheduled.start(0.0).unwrap();
+        scheduled.stop(0.0).unwrap();
     }
 }
