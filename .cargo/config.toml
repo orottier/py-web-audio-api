@@ -1,0 +1,5 @@
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-L", "native=/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib",
+    "-C", "link-arg=-Wl,-rpath,/Library/Developer/CommandLineTools/Library/Frameworks",
+]
