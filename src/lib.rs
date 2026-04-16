@@ -379,6 +379,25 @@ impl BaseAudioContext {
             }
         }
     }
+
+    #[pyo3(name = "createConvolver")]
+    fn create_convolver(&self, py: Python<'_>) -> PyResult<Py<ConvolverNode>> {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => convolver_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::ConvolverOptions::default(),
+            ),
+            BaseAudioContextInner::Offline(ctx) => convolver_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::ConvolverOptions::default(),
+            ),
+            BaseAudioContextInner::Concrete(ctx) => {
+                convolver_node_py(py, ctx, web_audio_api_rs::node::ConvolverOptions::default())
+            }
+        }
+    }
 }
 
 #[pyclass(extends = BaseAudioContext)]
@@ -926,6 +945,32 @@ fn analyser_node_py(
     Py::new(py, analyser_node(ctx, options))
 }
 
+fn convolver_node_parts(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::ConvolverOptions,
+) -> (ConvolverNode, AudioNode) {
+    let node = web_audio_api_rs::node::ConvolverNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (ConvolverNode(node), AudioNode(audio_node))
+}
+
+fn convolver_node(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::ConvolverOptions,
+) -> PyClassInitializer<ConvolverNode> {
+    let (node, base) = convolver_node_parts(ctx, options);
+    PyClassInitializer::from(base).add_subclass(node)
+}
+
+fn convolver_node_py(
+    py: Python<'_>,
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::ConvolverOptions,
+) -> PyResult<Py<ConvolverNode>> {
+    Py::new(py, convolver_node(ctx, options))
+}
+
 fn gain_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::GainOptions,
@@ -1238,6 +1283,34 @@ fn analyser_options(
     }
     if let Some(smoothing_time_constant) = options.get_item("smoothingTimeConstant")? {
         parsed.smoothing_time_constant = smoothing_time_constant.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn convolver_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::ConvolverOptions> {
+    let mut parsed = web_audio_api_rs::node::ConvolverOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options
+        .cast::<PyDict>()
+        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("ConvolverOptions must be a dict"))?;
+
+    if let Some(buffer) = options.get_item("buffer")? {
+        if !buffer.is_none() {
+            parsed.buffer = Some(buffer.extract::<PyRef<'_, AudioBuffer>>()?.0.clone());
+        }
+    }
+    if let Some(normalize) = options.get_item("normalize")? {
+        let normalize = normalize.extract::<bool>()?;
+        parsed.disable_normalization = !normalize;
+    }
+    if let Some(disable_normalization) = options.get_item("disableNormalization")? {
+        parsed.disable_normalization = disable_normalization.extract()?;
     }
 
     Ok(parsed)
@@ -1778,6 +1851,56 @@ impl AnalyserNode {
 }
 
 #[pyclass(extends = AudioNode)]
+struct ConvolverNode(Arc<Mutex<web_audio_api_rs::node::ConvolverNode>>);
+
+#[pymethods]
+impl ConvolverNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = convolver_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(convolver_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(convolver_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[getter]
+    fn buffer(&self) -> Option<AudioBuffer> {
+        self.0.lock().unwrap().buffer().cloned().map(AudioBuffer)
+    }
+
+    #[setter]
+    fn set_buffer(&mut self, value: Option<PyRef<'_, AudioBuffer>>) -> PyResult<()> {
+        if let Some(buffer) = value {
+            catch_web_audio_panic(|| self.0.lock().unwrap().set_buffer(buffer.0.clone()))?;
+        }
+        Ok(())
+    }
+
+    #[getter]
+    fn normalize(&self) -> bool {
+        self.0.lock().unwrap().normalize()
+    }
+
+    #[setter]
+    fn set_normalize(&mut self, value: bool) {
+        self.0.lock().unwrap().set_normalize(value);
+    }
+}
+
+#[pyclass(extends = AudioNode)]
 struct GainNode(Arc<Mutex<web_audio_api_rs::node::GainNode>>);
 
 #[pymethods]
@@ -2087,6 +2210,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioDestinationNode>()?;
     m.add_class::<AudioScheduledSourceNode>()?;
     m.add_class::<AnalyserNode>()?;
+    m.add_class::<ConvolverNode>()?;
     m.add_class::<AudioBufferSourceNode>()?;
     m.add_class::<GainNode>()?;
     m.add_class::<DelayNode>()?;
@@ -2187,6 +2311,30 @@ mod tests {
         assert_eq!(analyser.frequency_bin_count(), 32);
         analyser.set_smoothing_time_constant(0.5).unwrap();
         assert_eq!(analyser.smoothing_time_constant(), 0.5);
+    }
+
+    #[test]
+    fn convolver_graph_smoke_test() {
+        let (ctx, base) = offline_context_parts(1, 128, 44_100.);
+        let buffer = web_audio_api_rs::AudioBuffer::new(web_audio_api_rs::AudioBufferOptions {
+            number_of_channels: 1,
+            length: 8,
+            sample_rate: 44_100.,
+        });
+        let (mut convolver, convolver_node) = convolver_node_parts(
+            &*ctx.0.lock().unwrap(),
+            web_audio_api_rs::node::ConvolverOptions {
+                buffer: Some(buffer),
+                ..Default::default()
+            },
+        );
+        let destination = base.destination_audio_node();
+
+        convolver_node.connect_node(&destination, 0, 0).unwrap();
+        assert!(convolver.buffer().is_some());
+        assert!(convolver.normalize());
+        convolver.set_normalize(false);
+        assert!(!convolver.normalize());
     }
 
     #[test]

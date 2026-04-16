@@ -122,6 +122,27 @@ class WebAudioApiSmokeTest(unittest.TestCase):
 
         self.assertEqual(analyser.fftSize, 2048)
 
+    def test_convolver_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        impulse = web_audio_api.AudioBuffer(
+            {"numberOfChannels": 1, "length": 8, "sampleRate": 44_100.0}
+        )
+        convolver = web_audio_api.ConvolverNode(ctx, {"buffer": impulse, "normalize": False})
+
+        self.assertIsInstance(convolver, web_audio_api.AudioNode)
+        self.assertEqual(convolver.buffer.length, 8)
+        self.assertFalse(convolver.normalize)
+
+        convolver.normalize = True
+        self.assertTrue(convolver.normalize)
+
+    def test_create_convolver_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        convolver = ctx.createConvolver()
+
+        self.assertIsNone(convolver.buffer)
+        self.assertTrue(convolver.normalize)
+
     def test_base_audio_context_is_not_constructible(self):
         with self.assertRaises(TypeError):
             web_audio_api.BaseAudioContext()
