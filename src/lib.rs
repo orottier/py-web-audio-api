@@ -295,6 +295,25 @@ impl BaseAudioContext {
         }
     }
 
+    #[pyo3(name = "createPanner")]
+    fn create_panner(&self, py: Python<'_>) -> PyResult<Py<PannerNode>> {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => panner_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::PannerOptions::default(),
+            ),
+            BaseAudioContextInner::Offline(ctx) => panner_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::PannerOptions::default(),
+            ),
+            BaseAudioContextInner::Concrete(ctx) => {
+                panner_node_py(py, ctx, web_audio_api_rs::node::PannerOptions::default())
+            }
+        }
+    }
+
     #[pyo3(name = "createDelay", signature = (max_delay_time=1.0))]
     fn create_delay(&self, py: Python<'_>, max_delay_time: f64) -> PyResult<Py<DelayNode>> {
         let options = web_audio_api_rs::node::DelayOptions {
@@ -1533,6 +1552,39 @@ fn wave_shaper_node_py(
 }
 
 #[cfg(test)]
+fn panner_node_parts(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::PannerOptions,
+) -> (PannerNode, AudioNode) {
+    wrap_audio_node(
+        web_audio_api_rs::node::PannerNode::new(ctx, options),
+        PannerNode,
+    )
+}
+
+fn panner_node(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::PannerOptions,
+) -> PyClassInitializer<PannerNode> {
+    init_audio_node(
+        web_audio_api_rs::node::PannerNode::new(ctx, options),
+        PannerNode,
+    )
+}
+
+fn panner_node_py(
+    py: Python<'_>,
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::PannerOptions,
+) -> PyResult<Py<PannerNode>> {
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::PannerNode::new(ctx, options),
+        PannerNode,
+    )
+}
+
+#[cfg(test)]
 fn oscillator_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::OscillatorOptions,
@@ -1978,6 +2030,100 @@ fn wave_shaper_options(
     }
     if let Some(oversample) = options.get_item("oversample")? {
         parsed.oversample = oversample_type_from_str(oversample.extract::<&str>()?)?;
+    }
+
+    Ok(parsed)
+}
+
+fn panning_model_type_to_str(value: web_audio_api_rs::node::PanningModelType) -> &'static str {
+    match value {
+        web_audio_api_rs::node::PanningModelType::EqualPower => "equalpower",
+        web_audio_api_rs::node::PanningModelType::HRTF => "HRTF",
+    }
+}
+
+fn panning_model_type_from_str(value: &str) -> PyResult<web_audio_api_rs::node::PanningModelType> {
+    match value {
+        "equalpower" => Ok(web_audio_api_rs::node::PanningModelType::EqualPower),
+        "HRTF" => Ok(web_audio_api_rs::node::PanningModelType::HRTF),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "expected 'equalpower' or 'HRTF'",
+        )),
+    }
+}
+
+fn distance_model_type_to_str(value: web_audio_api_rs::node::DistanceModelType) -> &'static str {
+    match value {
+        web_audio_api_rs::node::DistanceModelType::Linear => "linear",
+        web_audio_api_rs::node::DistanceModelType::Inverse => "inverse",
+        web_audio_api_rs::node::DistanceModelType::Exponential => "exponential",
+    }
+}
+
+fn distance_model_type_from_str(
+    value: &str,
+) -> PyResult<web_audio_api_rs::node::DistanceModelType> {
+    match value {
+        "linear" => Ok(web_audio_api_rs::node::DistanceModelType::Linear),
+        "inverse" => Ok(web_audio_api_rs::node::DistanceModelType::Inverse),
+        "exponential" => Ok(web_audio_api_rs::node::DistanceModelType::Exponential),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "expected 'linear', 'inverse', or 'exponential'",
+        )),
+    }
+}
+
+fn panner_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::PannerOptions> {
+    let mut parsed = web_audio_api_rs::node::PannerOptions::default();
+    let Some(options) = options_dict(options, "PannerOptions")? else {
+        return Ok(parsed);
+    };
+
+    update_audio_node_options(options, &mut parsed.audio_node_options)?;
+
+    if let Some(panning_model) = options.get_item("panningModel")? {
+        parsed.panning_model = panning_model_type_from_str(panning_model.extract::<&str>()?)?;
+    }
+    if let Some(distance_model) = options.get_item("distanceModel")? {
+        parsed.distance_model = distance_model_type_from_str(distance_model.extract::<&str>()?)?;
+    }
+    if let Some(position_x) = options.get_item("positionX")? {
+        parsed.position_x = position_x.extract()?;
+    }
+    if let Some(position_y) = options.get_item("positionY")? {
+        parsed.position_y = position_y.extract()?;
+    }
+    if let Some(position_z) = options.get_item("positionZ")? {
+        parsed.position_z = position_z.extract()?;
+    }
+    if let Some(orientation_x) = options.get_item("orientationX")? {
+        parsed.orientation_x = orientation_x.extract()?;
+    }
+    if let Some(orientation_y) = options.get_item("orientationY")? {
+        parsed.orientation_y = orientation_y.extract()?;
+    }
+    if let Some(orientation_z) = options.get_item("orientationZ")? {
+        parsed.orientation_z = orientation_z.extract()?;
+    }
+    if let Some(ref_distance) = options.get_item("refDistance")? {
+        parsed.ref_distance = ref_distance.extract()?;
+    }
+    if let Some(max_distance) = options.get_item("maxDistance")? {
+        parsed.max_distance = max_distance.extract()?;
+    }
+    if let Some(rolloff_factor) = options.get_item("rolloffFactor")? {
+        parsed.rolloff_factor = rolloff_factor.extract()?;
+    }
+    if let Some(cone_inner_angle) = options.get_item("coneInnerAngle")? {
+        parsed.cone_inner_angle = cone_inner_angle.extract()?;
+    }
+    if let Some(cone_outer_angle) = options.get_item("coneOuterAngle")? {
+        parsed.cone_outer_angle = cone_outer_angle.extract()?;
+    }
+    if let Some(cone_outer_gain) = options.get_item("coneOuterGain")? {
+        parsed.cone_outer_gain = cone_outer_gain.extract()?;
     }
 
     Ok(parsed)
@@ -2803,6 +2949,145 @@ impl WaveShaperNode {
     }
 }
 
+#[pyclass(extends = AudioNode)]
+struct PannerNode(Arc<Mutex<web_audio_api_rs::node::PannerNode>>);
+
+#[pymethods]
+impl PannerNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = panner_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(panner_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(panner_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[getter(panningModel)]
+    fn panning_model(&self) -> String {
+        panning_model_type_to_str(self.0.lock().unwrap().panning_model()).to_owned()
+    }
+
+    #[setter(panningModel)]
+    fn set_panning_model(&mut self, value: &str) -> PyResult<()> {
+        let value = panning_model_type_from_str(value)?;
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_panning_model(value))
+    }
+
+    #[getter(positionX)]
+    fn position_x(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().position_x().clone())
+    }
+
+    #[getter(positionY)]
+    fn position_y(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().position_y().clone())
+    }
+
+    #[getter(positionZ)]
+    fn position_z(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().position_z().clone())
+    }
+
+    #[getter(orientationX)]
+    fn orientation_x(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().orientation_x().clone())
+    }
+
+    #[getter(orientationY)]
+    fn orientation_y(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().orientation_y().clone())
+    }
+
+    #[getter(orientationZ)]
+    fn orientation_z(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().orientation_z().clone())
+    }
+
+    #[getter(distanceModel)]
+    fn distance_model(&self) -> String {
+        distance_model_type_to_str(self.0.lock().unwrap().distance_model()).to_owned()
+    }
+
+    #[setter(distanceModel)]
+    fn set_distance_model(&mut self, value: &str) -> PyResult<()> {
+        let value = distance_model_type_from_str(value)?;
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_distance_model(value))
+    }
+
+    #[getter(refDistance)]
+    fn ref_distance(&self) -> f64 {
+        self.0.lock().unwrap().ref_distance()
+    }
+
+    #[setter(refDistance)]
+    fn set_ref_distance(&mut self, value: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_ref_distance(value))
+    }
+
+    #[getter(maxDistance)]
+    fn max_distance(&self) -> f64 {
+        self.0.lock().unwrap().max_distance()
+    }
+
+    #[setter(maxDistance)]
+    fn set_max_distance(&mut self, value: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_max_distance(value))
+    }
+
+    #[getter(rolloffFactor)]
+    fn rolloff_factor(&self) -> f64 {
+        self.0.lock().unwrap().rolloff_factor()
+    }
+
+    #[setter(rolloffFactor)]
+    fn set_rolloff_factor(&mut self, value: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_rolloff_factor(value))
+    }
+
+    #[getter(coneInnerAngle)]
+    fn cone_inner_angle(&self) -> f64 {
+        self.0.lock().unwrap().cone_inner_angle()
+    }
+
+    #[setter(coneInnerAngle)]
+    fn set_cone_inner_angle(&mut self, value: f64) {
+        self.0.lock().unwrap().set_cone_inner_angle(value);
+    }
+
+    #[getter(coneOuterAngle)]
+    fn cone_outer_angle(&self) -> f64 {
+        self.0.lock().unwrap().cone_outer_angle()
+    }
+
+    #[setter(coneOuterAngle)]
+    fn set_cone_outer_angle(&mut self, value: f64) {
+        self.0.lock().unwrap().set_cone_outer_angle(value);
+    }
+
+    #[getter(coneOuterGain)]
+    fn cone_outer_gain(&self) -> f64 {
+        self.0.lock().unwrap().cone_outer_gain()
+    }
+
+    #[setter(coneOuterGain)]
+    fn set_cone_outer_gain(&mut self, value: f64) -> PyResult<()> {
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_cone_outer_gain(value))
+    }
+}
+
 #[pyclass(extends = AudioScheduledSourceNode)]
 struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 
@@ -2906,6 +3191,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BiquadFilterNode>()?;
     m.add_class::<IIRFilterNode>()?;
     m.add_class::<WaveShaperNode>()?;
+    m.add_class::<PannerNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -3265,5 +3551,34 @@ mod tests {
 
         assert_eq!(shaper.curve().unwrap(), [-1.0, 0.0, 1.0]);
         assert_eq!(shaper.oversample(), "2x");
+    }
+
+    #[test]
+    fn panner_graph_smoke_test() {
+        let (ctx, base) = offline_context_parts(2, 128, 44_100.);
+        let (mut panner, panner_node) = panner_node_parts(
+            &*ctx.0.lock().unwrap(),
+            web_audio_api_rs::node::PannerOptions::default(),
+        );
+        let destination = base.destination_audio_node();
+
+        panner_node.connect_node(&destination, 0, 0).unwrap();
+        panner.position_x().set_value(1.0).unwrap();
+        panner.set_distance_model("linear").unwrap();
+        panner.set_ref_distance(2.0).unwrap();
+        panner.set_max_distance(20.0).unwrap();
+        panner.set_rolloff_factor(0.5).unwrap();
+        panner.set_cone_inner_angle(90.0);
+        panner.set_cone_outer_angle(180.0);
+        panner.set_cone_outer_gain(0.25).unwrap();
+
+        assert_eq!(panner.position_x().value().unwrap(), 1.0);
+        assert_eq!(panner.distance_model(), "linear");
+        assert_eq!(panner.ref_distance(), 2.0);
+        assert_eq!(panner.max_distance(), 20.0);
+        assert_eq!(panner.rolloff_factor(), 0.5);
+        assert_eq!(panner.cone_inner_angle(), 90.0);
+        assert_eq!(panner.cone_outer_angle(), 180.0);
+        assert_eq!(panner.cone_outer_gain(), 0.25);
     }
 }

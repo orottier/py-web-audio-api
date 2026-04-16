@@ -333,6 +333,56 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(shaper.curve, [-0.5, 0.0, 0.5])
         self.assertEqual(shaper.oversample, "4x")
 
+    def test_panner_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+        panner = web_audio_api.PannerNode(
+            ctx,
+            {
+                "panningModel": "equalpower",
+                "distanceModel": "linear",
+                "positionX": 1.0,
+                "positionY": 2.0,
+                "positionZ": 3.0,
+                "orientationX": 0.0,
+                "orientationY": 1.0,
+                "orientationZ": 0.0,
+                "refDistance": 2.0,
+                "maxDistance": 20.0,
+                "rolloffFactor": 0.5,
+                "coneInnerAngle": 90.0,
+                "coneOuterAngle": 180.0,
+                "coneOuterGain": 0.25,
+                "channelCount": 2,
+                "channelCountMode": "clamped-max",
+            },
+        )
+
+        self.assertIsInstance(panner, web_audio_api.AudioNode)
+        self.assertEqual(panner.panningModel, "equalpower")
+        self.assertEqual(panner.distanceModel, "linear")
+        self.assertEqual(panner.positionX.value, 1.0)
+        self.assertEqual(panner.positionY.value, 2.0)
+        self.assertEqual(panner.positionZ.value, 3.0)
+        self.assertEqual(panner.orientationX.value, 0.0)
+        self.assertEqual(panner.orientationY.value, 1.0)
+        self.assertEqual(panner.orientationZ.value, 0.0)
+        self.assertEqual(panner.refDistance, 2.0)
+        self.assertEqual(panner.maxDistance, 20.0)
+        self.assertEqual(panner.rolloffFactor, 0.5)
+        self.assertEqual(panner.coneInnerAngle, 90.0)
+        self.assertEqual(panner.coneOuterAngle, 180.0)
+        self.assertEqual(panner.coneOuterGain, 0.25)
+        self.assertEqual(panner.channelCountMode, "clamped-max")
+
+    def test_create_panner_works(self):
+        ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
+        panner = ctx.createPanner()
+
+        self.assertEqual(panner.panningModel, "equalpower")
+        self.assertEqual(panner.distanceModel, "inverse")
+        panner.refDistance = 3.0
+        self.assertEqual(panner.refDistance, 3.0)
+
     def test_audio_param_methods_work(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         osc = web_audio_api.OscillatorNode(ctx)
