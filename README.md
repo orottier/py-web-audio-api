@@ -51,3 +51,16 @@ Run the Python tests against an installed wheel:
 maturin develop
 .venv/bin/python -m unittest discover -s tests
 ```
+
+## Release
+
+Update the version in `pyproject.toml`.
+Create and push a tag matching the release version:
+
+```bash
+git tag v0.1.0
+git push origin main
+git push origin v0.1.0
+```
+
+Pushing the tag triggers the GitHub Actions release workflow, which builds the release artifacts and uploads them to PyPI.
