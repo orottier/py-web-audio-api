@@ -121,6 +121,21 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             frequency,
         )
 
+    def test_audio_param_has_idl_shaped_surface(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        gain = web_audio_api.GainNode(ctx)
+        param = gain.gain
+
+        self.assertIsInstance(param, web_audio_api.AudioParam)
+        self.assertEqual(param.automationRate, "a-rate")
+        self.assertEqual(param.defaultValue, 1.0)
+        self.assertLess(param.minValue, -1e30)
+        self.assertGreater(param.maxValue, 1e30)
+        self.assertEqual(param.value, 1.0)
+
+        with self.assertRaises(TypeError):
+            web_audio_api.AudioParam()
+
     def test_self_connect_reports_rust_error(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         osc = web_audio_api.OscillatorNode(ctx)
