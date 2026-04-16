@@ -398,6 +398,27 @@ impl BaseAudioContext {
             }
         }
     }
+
+    #[pyo3(name = "createDynamicsCompressor")]
+    fn create_dynamics_compressor(&self, py: Python<'_>) -> PyResult<Py<DynamicsCompressorNode>> {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => dynamics_compressor_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::DynamicsCompressorOptions::default(),
+            ),
+            BaseAudioContextInner::Offline(ctx) => dynamics_compressor_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::DynamicsCompressorOptions::default(),
+            ),
+            BaseAudioContextInner::Concrete(ctx) => dynamics_compressor_node_py(
+                py,
+                ctx,
+                web_audio_api_rs::node::DynamicsCompressorOptions::default(),
+            ),
+        }
+    }
 }
 
 #[pyclass(extends = BaseAudioContext)]
@@ -971,6 +992,32 @@ fn convolver_node_py(
     Py::new(py, convolver_node(ctx, options))
 }
 
+fn dynamics_compressor_node_parts(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::DynamicsCompressorOptions,
+) -> (DynamicsCompressorNode, AudioNode) {
+    let node = web_audio_api_rs::node::DynamicsCompressorNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (DynamicsCompressorNode(node), AudioNode(audio_node))
+}
+
+fn dynamics_compressor_node(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::DynamicsCompressorOptions,
+) -> PyClassInitializer<DynamicsCompressorNode> {
+    let (node, base) = dynamics_compressor_node_parts(ctx, options);
+    PyClassInitializer::from(base).add_subclass(node)
+}
+
+fn dynamics_compressor_node_py(
+    py: Python<'_>,
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::DynamicsCompressorOptions,
+) -> PyResult<Py<DynamicsCompressorNode>> {
+    Py::new(py, dynamics_compressor_node(ctx, options))
+}
+
 fn gain_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::GainOptions,
@@ -1311,6 +1358,37 @@ fn convolver_options(
     }
     if let Some(disable_normalization) = options.get_item("disableNormalization")? {
         parsed.disable_normalization = disable_normalization.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn dynamics_compressor_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::DynamicsCompressorOptions> {
+    let mut parsed = web_audio_api_rs::node::DynamicsCompressorOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err("DynamicsCompressorOptions must be a dict")
+    })?;
+
+    if let Some(attack) = options.get_item("attack")? {
+        parsed.attack = attack.extract()?;
+    }
+    if let Some(knee) = options.get_item("knee")? {
+        parsed.knee = knee.extract()?;
+    }
+    if let Some(ratio) = options.get_item("ratio")? {
+        parsed.ratio = ratio.extract()?;
+    }
+    if let Some(release) = options.get_item("release")? {
+        parsed.release = release.extract()?;
+    }
+    if let Some(threshold) = options.get_item("threshold")? {
+        parsed.threshold = threshold.extract()?;
     }
 
     Ok(parsed)
@@ -1901,6 +1979,63 @@ impl ConvolverNode {
 }
 
 #[pyclass(extends = AudioNode)]
+struct DynamicsCompressorNode(Arc<Mutex<web_audio_api_rs::node::DynamicsCompressorNode>>);
+
+#[pymethods]
+impl DynamicsCompressorNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = dynamics_compressor_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(dynamics_compressor_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(dynamics_compressor_node(&*ctx.0.lock().unwrap(), options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[getter]
+    fn threshold(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().threshold().clone())
+    }
+
+    #[getter]
+    fn knee(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().knee().clone())
+    }
+
+    #[getter]
+    fn ratio(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().ratio().clone())
+    }
+
+    #[getter]
+    fn reduction(&self) -> f32 {
+        self.0.lock().unwrap().reduction()
+    }
+
+    #[getter]
+    fn attack(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().attack().clone())
+    }
+
+    #[getter]
+    fn release(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().release().clone())
+    }
+}
+
+#[pyclass(extends = AudioNode)]
 struct GainNode(Arc<Mutex<web_audio_api_rs::node::GainNode>>);
 
 #[pymethods]
@@ -2211,6 +2346,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioScheduledSourceNode>()?;
     m.add_class::<AnalyserNode>()?;
     m.add_class::<ConvolverNode>()?;
+    m.add_class::<DynamicsCompressorNode>()?;
     m.add_class::<AudioBufferSourceNode>()?;
     m.add_class::<GainNode>()?;
     m.add_class::<DelayNode>()?;
@@ -2335,6 +2471,24 @@ mod tests {
         assert!(convolver.normalize());
         convolver.set_normalize(false);
         assert!(!convolver.normalize());
+    }
+
+    #[test]
+    fn dynamics_compressor_graph_smoke_test() {
+        let (ctx, base) = offline_context_parts(1, 128, 44_100.);
+        let (compressor, compressor_node) = dynamics_compressor_node_parts(
+            &*ctx.0.lock().unwrap(),
+            web_audio_api_rs::node::DynamicsCompressorOptions {
+                threshold: -18.,
+                ..Default::default()
+            },
+        );
+        let destination = base.destination_audio_node();
+
+        compressor_node.connect_node(&destination, 0, 0).unwrap();
+        assert_eq!(compressor.threshold().value().unwrap(), -18.);
+        assert_eq!(compressor.knee().value().unwrap(), 30.);
+        assert_eq!(compressor.ratio().value().unwrap(), 12.);
     }
 
     #[test]

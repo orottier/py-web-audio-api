@@ -143,6 +143,23 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertIsNone(convolver.buffer)
         self.assertTrue(convolver.normalize)
 
+    def test_dynamics_compressor_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        compressor = web_audio_api.DynamicsCompressorNode(ctx, {"threshold": -18.0})
+
+        self.assertIsInstance(compressor, web_audio_api.AudioNode)
+        self.assertEqual(compressor.threshold.value, -18.0)
+        self.assertEqual(compressor.knee.value, 30.0)
+        self.assertEqual(compressor.ratio.value, 12.0)
+        self.assertAlmostEqual(compressor.attack.value, 0.003)
+        self.assertEqual(compressor.release.value, 0.25)
+
+    def test_create_dynamics_compressor_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        compressor = ctx.createDynamicsCompressor()
+
+        self.assertEqual(compressor.threshold.value, -24.0)
+
     def test_base_audio_context_is_not_constructible(self):
         with self.assertRaises(TypeError):
             web_audio_api.BaseAudioContext()
