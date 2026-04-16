@@ -193,9 +193,21 @@ impl BaseAudioContext {
     #[pyo3(name = "createOscillator")]
     fn create_oscillator(&self, py: Python<'_>) -> PyResult<Py<OscillatorNode>> {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => oscillator_node_py(py, &*ctx.lock().unwrap()),
-            BaseAudioContextInner::Offline(ctx) => oscillator_node_py(py, &*ctx.lock().unwrap()),
-            BaseAudioContextInner::Concrete(ctx) => oscillator_node_py(py, ctx),
+            BaseAudioContextInner::Realtime(ctx) => oscillator_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::OscillatorOptions::default(),
+            ),
+            BaseAudioContextInner::Offline(ctx) => oscillator_node_py(
+                py,
+                &*ctx.lock().unwrap(),
+                web_audio_api_rs::node::OscillatorOptions::default(),
+            ),
+            BaseAudioContextInner::Concrete(ctx) => oscillator_node_py(
+                py,
+                ctx,
+                web_audio_api_rs::node::OscillatorOptions::default(),
+            ),
         }
     }
 
@@ -427,6 +439,7 @@ struct AudioContext(Arc<Mutex<web_audio_api_rs::context::AudioContext>>);
 #[pymethods]
 impl AudioContext {
     #[new]
+    #[pyo3(signature = (options=None))]
     fn new(options: Option<&Bound<'_, PyAny>>) -> PyResult<PyClassInitializer<Self>> {
         let options = audio_context_options(options)?;
         let ctx =
@@ -1380,17 +1393,21 @@ fn biquad_filter_node_py(
 #[cfg(test)]
 fn oscillator_node_parts(
     ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::OscillatorOptions,
 ) -> (OscillatorNode, AudioScheduledSourceNode, AudioNode) {
     wrap_scheduled_source_node(
-        ctx.create_oscillator(),
+        web_audio_api_rs::node::OscillatorNode::new(ctx, options),
         ScheduledSourceInner::Oscillator,
         OscillatorNode,
     )
 }
 
-fn oscillator_node(ctx: &impl RsBaseAudioContext) -> PyClassInitializer<OscillatorNode> {
+fn oscillator_node(
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::OscillatorOptions,
+) -> PyClassInitializer<OscillatorNode> {
     init_scheduled_source_node(
-        ctx.create_oscillator(),
+        web_audio_api_rs::node::OscillatorNode::new(ctx, options),
         ScheduledSourceInner::Oscillator,
         OscillatorNode,
     )
@@ -1399,10 +1416,11 @@ fn oscillator_node(ctx: &impl RsBaseAudioContext) -> PyClassInitializer<Oscillat
 fn oscillator_node_py(
     py: Python<'_>,
     ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::OscillatorOptions,
 ) -> PyResult<Py<OscillatorNode>> {
     new_scheduled_source_node_py(
         py,
-        ctx.create_oscillator(),
+        web_audio_api_rs::node::OscillatorNode::new(ctx, options),
         ScheduledSourceInner::Oscillator,
         OscillatorNode,
     )
@@ -1739,6 +1757,36 @@ fn biquad_filter_options(
     }
     if let Some(gain) = options.get_item("gain")? {
         parsed.gain = gain.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn oscillator_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::OscillatorOptions> {
+    let mut parsed = web_audio_api_rs::node::OscillatorOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options
+        .cast::<PyDict>()
+        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("OscillatorOptions must be a dict"))?;
+
+    if let Some(type_) = options.get_item("type")? {
+        parsed.type_ = oscillator_type_from_str(type_.extract::<&str>()?)?;
+    }
+    if let Some(frequency) = options.get_item("frequency")? {
+        parsed.frequency = frequency.extract()?;
+    }
+    if let Some(detune) = options.get_item("detune")? {
+        parsed.detune = detune.extract()?;
+    }
+    if options.get_item("periodicWave")?.is_some() {
+        return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "OscillatorOptions.periodicWave is not implemented yet",
+        ));
     }
 
     Ok(parsed)
@@ -2476,13 +2524,19 @@ struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 #[pymethods]
 impl OscillatorNode {
     #[new]
-    fn new(ctx: &Bound<'_, PyAny>) -> PyResult<PyClassInitializer<Self>> {
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = oscillator_options(options)?;
+
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(oscillator_node(&*ctx.0.lock().unwrap()));
+            return Ok(oscillator_node(&*ctx.0.lock().unwrap(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(oscillator_node(&*ctx.0.lock().unwrap()));
+            return Ok(oscillator_node(&*ctx.0.lock().unwrap(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -2714,7 +2768,10 @@ mod tests {
     #[test]
     fn oscillator_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
-        let (osc, scheduled, osc_node) = oscillator_node_parts(&*ctx.0.lock().unwrap());
+        let (osc, scheduled, osc_node) = oscillator_node_parts(
+            &*ctx.0.lock().unwrap(),
+            web_audio_api_rs::node::OscillatorOptions::default(),
+        );
         let destination = base.destination_audio_node();
 
         osc_node.connect_node(&destination, 0, 0).unwrap();
@@ -2732,7 +2789,10 @@ mod tests {
 
         std::thread::spawn(move || {
             let (ctx, _) = offline_context_parts(1, 128, 44_100.);
-            let (_, _, node) = oscillator_node_parts(&*ctx.0.lock().unwrap());
+            let (_, _, node) = oscillator_node_parts(
+                &*ctx.0.lock().unwrap(),
+                web_audio_api_rs::node::OscillatorOptions::default(),
+            );
             let result = node
                 .connect_node(&node, 0, 0)
                 .is_err_and(|err| err.to_string().contains("input port 0 is out of bounds"));

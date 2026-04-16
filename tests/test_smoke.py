@@ -169,6 +169,14 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertFalse(hasattr(ctx, "startRendering"))
 
     def test_audio_context_options_are_accepted(self):
+        for constructor in (lambda: web_audio_api.AudioContext(), lambda: web_audio_api.AudioContext(None)):
+            try:
+                ctx = constructor()
+            except RuntimeError as exc:
+                self.assertNotIsInstance(exc, TypeError)
+            else:
+                self.assertGreater(ctx.sampleRate, 0.0)
+
         ctx = web_audio_api.AudioContext(
             {
                 "sinkId": "none",
@@ -203,6 +211,25 @@ class WebAudioApiSmokeTest(unittest.TestCase):
 
         osc.start()
         osc.stop()
+
+    def test_direct_node_constructors_accept_omitted_optional_options(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+
+        gain = web_audio_api.GainNode(ctx)
+        gain_with_none = web_audio_api.GainNode(ctx, None)
+        osc = web_audio_api.OscillatorNode(ctx)
+        osc_with_none = web_audio_api.OscillatorNode(ctx, None)
+        configured_osc = web_audio_api.OscillatorNode(
+            ctx, {"type": "square", "frequency": 220.0, "detune": 50.0}
+        )
+
+        self.assertEqual(gain.gain.value, 1.0)
+        self.assertEqual(gain_with_none.gain.value, 1.0)
+        self.assertEqual(osc.type, "sine")
+        self.assertEqual(osc_with_none.type, "sine")
+        self.assertEqual(configured_osc.type, "square")
+        self.assertEqual(configured_osc.frequency.value, 220.0)
+        self.assertEqual(configured_osc.detune.value, 50.0)
 
     def test_audio_param_methods_work(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
