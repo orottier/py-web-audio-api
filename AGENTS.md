@@ -21,3 +21,8 @@
   - `.venv/bin/python -m pip wheel . --no-deps --wheel-dir /tmp/py-web-audio-api-wheel-test`
   - reinstall the wheel into the test venv
   - `.venv/bin/python -m unittest discover -s tests`
+- If wheel-building is blocked by missing network access for `maturin`, use the offline fallback:
+  - `cargo build`
+  - symlink `target/debug/libweb_audio_api.dylib` to `/tmp/web_audio_api.so`
+  - run `PYTHONPATH=/tmp python3.11 -m unittest discover -s tests`
+  - report that Python verification used the local `cdylib` fallback instead of a built wheel
