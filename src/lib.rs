@@ -97,6 +97,11 @@ impl AudioContext {
             web_audio_api_rs::node::AudioBufferSourceOptions::default(),
         )
     }
+
+    #[pyo3(name = "createGain")]
+    fn create_gain(&self, py: Python<'_>) -> PyResult<Py<GainNode>> {
+        gain_node_py(py, &self.0, web_audio_api_rs::node::GainOptions::default())
+    }
 }
 
 #[pyclass]
@@ -139,6 +144,11 @@ impl OfflineAudioContext {
             &self.0,
             web_audio_api_rs::node::AudioBufferSourceOptions::default(),
         )
+    }
+
+    #[pyo3(name = "createGain")]
+    fn create_gain(&self, py: Python<'_>) -> PyResult<Py<GainNode>> {
+        gain_node_py(py, &self.0, web_audio_api_rs::node::GainOptions::default())
     }
 
     #[pyo3(name = "startRendering")]
@@ -337,6 +347,32 @@ fn audio_buffer_source_node_py(
     Py::new(py, audio_buffer_source_node(ctx, options))
 }
 
+fn gain_node_parts(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::GainOptions,
+) -> (GainNode, AudioNode) {
+    let node = web_audio_api_rs::node::GainNode::new(ctx, options);
+    let node = Arc::new(Mutex::new(node));
+    let audio_node = Arc::clone(&node) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
+    (GainNode(node), AudioNode(audio_node))
+}
+
+fn gain_node(
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::GainOptions,
+) -> PyClassInitializer<GainNode> {
+    let (node, base) = gain_node_parts(ctx, options);
+    PyClassInitializer::from(base).add_subclass(node)
+}
+
+fn gain_node_py(
+    py: Python<'_>,
+    ctx: &impl BaseAudioContext,
+    options: web_audio_api_rs::node::GainOptions,
+) -> PyResult<Py<GainNode>> {
+    Py::new(py, gain_node(ctx, options))
+}
+
 fn oscillator_node_parts(
     ctx: &impl BaseAudioContext,
 ) -> (OscillatorNode, AudioScheduledSourceNode, AudioNode) {
@@ -443,6 +479,25 @@ fn audio_buffer_source_options(
     }
     if let Some(playback_rate) = options.get_item("playbackRate")? {
         parsed.playback_rate = playback_rate.extract()?;
+    }
+
+    Ok(parsed)
+}
+
+fn gain_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::node::GainOptions> {
+    let mut parsed = web_audio_api_rs::node::GainOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options
+        .cast::<PyDict>()
+        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("GainOptions must be a dict"))?;
+
+    if let Some(gain) = options.get_item("gain")? {
+        parsed.gain = gain.extract()?;
     }
 
     Ok(parsed)
@@ -744,6 +799,38 @@ impl AudioBufferSourceNode {
     }
 }
 
+#[pyclass(extends = AudioNode)]
+struct GainNode(Arc<Mutex<web_audio_api_rs::node::GainNode>>);
+
+#[pymethods]
+impl GainNode {
+    #[new]
+    #[pyo3(signature = (ctx, options=None))]
+    fn new(
+        ctx: &Bound<'_, PyAny>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = gain_options(options)?;
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return Ok(gain_node(&ctx.0, options));
+        }
+
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return Ok(gain_node(&ctx.0, options));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[getter]
+    fn gain(&self) -> AudioParam {
+        AudioParam(self.0.lock().unwrap().gain().clone())
+    }
+}
+
 #[pyclass(extends = AudioScheduledSourceNode)]
 struct OscillatorNode(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>);
 
@@ -827,6 +914,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioNode>()?;
     m.add_class::<AudioScheduledSourceNode>()?;
     m.add_class::<AudioBufferSourceNode>()?;
+    m.add_class::<GainNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -913,5 +1001,21 @@ mod tests {
 
         scheduled.start(0.0).unwrap();
         scheduled.stop(0.0).unwrap();
+    }
+
+    #[test]
+    fn gain_graph_smoke_test() {
+        let ctx = OfflineAudioContext::new(1, 128, 44_100.);
+        let (gain, gain_node) = gain_node_parts(
+            &ctx.0,
+            web_audio_api_rs::node::GainOptions {
+                gain: 0.5,
+                ..Default::default()
+            },
+        );
+        let destination = ctx.destination();
+
+        gain_node.connect(&destination).unwrap();
+        assert_eq!(gain.gain().value().unwrap(), 0.5);
     }
 }

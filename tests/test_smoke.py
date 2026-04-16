@@ -156,6 +156,38 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertTrue(all(sample == 0.125 for sample in data[:1000]))
         self.assertTrue(all(sample == 0.25 for sample in data[1000:]))
 
+    def test_gain_node_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        gain = web_audio_api.GainNode(ctx, {"gain": 0.5})
+
+        self.assertIsInstance(gain, web_audio_api.AudioNode)
+        self.assertEqual(gain.gain.value, 0.5)
+
+        gain.gain.value = 0.25
+        self.assertEqual(gain.gain.value, 0.25)
+
+    def test_create_gain_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        gain = ctx.createGain()
+
+        self.assertEqual(gain.gain.value, 1.0)
+
+    def test_gain_node_renders_samples_offline(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)
+        buffer = web_audio_api.AudioBuffer(
+            {"numberOfChannels": 1, "length": 2000, "sampleRate": 2000.0}
+        )
+        buffer.copyToChannel([0.5] * 2000, 0)
+        src = web_audio_api.AudioBufferSourceNode(ctx, {"buffer": buffer})
+        gain = web_audio_api.GainNode(ctx, {"gain": 0.25})
+
+        src.connect(gain)
+        gain.connect(ctx.destination)
+        src.start()
+
+        data = ctx.startRendering().getChannelData(0)
+        self.assertTrue(all(sample == 0.125 for sample in data))
+
 
 if __name__ == "__main__":
     unittest.main()
