@@ -18,8 +18,14 @@ impl AudioContext {
         Self(Default::default())
     }
 
+    #[getter]
     fn destination(&self) -> AudioNode {
         destination_node(&self.0)
+    }
+
+    #[pyo3(name = "createOscillator")]
+    fn create_oscillator(&self, py: Python<'_>) -> PyResult<Py<OscillatorNode>> {
+        oscillator_node_py(py, &self.0)
     }
 }
 
@@ -37,8 +43,14 @@ impl OfflineAudioContext {
         ))
     }
 
+    #[getter]
     fn destination(&self) -> AudioNode {
         destination_node(&self.0)
+    }
+
+    #[pyo3(name = "createOscillator")]
+    fn create_oscillator(&self, py: Python<'_>) -> PyResult<Py<OscillatorNode>> {
+        oscillator_node_py(py, &self.0)
     }
 }
 
@@ -139,6 +151,11 @@ fn oscillator_node(ctx: &impl BaseAudioContext) -> (OscillatorNode, AudioNode) {
     (OscillatorNode(node), AudioNode(audio_node))
 }
 
+fn oscillator_node_py(py: Python<'_>, ctx: &impl BaseAudioContext) -> PyResult<Py<OscillatorNode>> {
+    let (osc, base) = oscillator_node(ctx);
+    Py::new(py, (osc, base))
+}
+
 fn automation_rate_to_str(value: AutomationRate) -> &'static str {
     match value {
         AutomationRate::A => "a-rate",
@@ -184,28 +201,28 @@ struct AudioParam(web_audio_api_rs::AudioParam);
 
 #[pymethods]
 impl AudioParam {
-    #[getter]
+    #[getter(automationRate)]
     fn automation_rate(&self) -> String {
         automation_rate_to_str(self.0.automation_rate()).to_owned()
     }
 
-    #[setter]
+    #[setter(automationRate)]
     fn set_automation_rate(&self, value: &str) -> PyResult<()> {
         let value = automation_rate_from_str(value)?;
         catch_web_audio_panic(|| self.0.set_automation_rate(value))
     }
 
-    #[getter]
+    #[getter(defaultValue)]
     fn default_value(&self) -> f32 {
         self.0.default_value()
     }
 
-    #[getter]
+    #[getter(minValue)]
     fn min_value(&self) -> f32 {
         self.0.min_value()
     }
 
-    #[getter]
+    #[getter(maxValue)]
     fn max_value(&self) -> f32 {
         self.0.max_value()
     }
@@ -222,52 +239,78 @@ impl AudioParam {
         })
     }
 
-    fn set_value_at_time(&self, value: f32, start_time: f64) -> PyResult<()> {
+    #[pyo3(name = "setValueAtTime")]
+    fn set_value_at_time(slf: PyRef<'_, Self>, value: f32, start_time: f64) -> PyResult<Py<Self>> {
         catch_web_audio_panic(|| {
-            self.0.set_value_at_time(value, start_time);
-        })
+            slf.0.set_value_at_time(value, start_time);
+        })?;
+        Ok(slf.into())
     }
 
-    fn linear_ramp_to_value_at_time(&self, value: f32, end_time: f64) -> PyResult<()> {
+    #[pyo3(name = "linearRampToValueAtTime")]
+    fn linear_ramp_to_value_at_time(
+        slf: PyRef<'_, Self>,
+        value: f32,
+        end_time: f64,
+    ) -> PyResult<Py<Self>> {
         catch_web_audio_panic(|| {
-            self.0.linear_ramp_to_value_at_time(value, end_time);
-        })
+            slf.0.linear_ramp_to_value_at_time(value, end_time);
+        })?;
+        Ok(slf.into())
     }
 
-    fn exponential_ramp_to_value_at_time(&self, value: f32, end_time: f64) -> PyResult<()> {
+    #[pyo3(name = "exponentialRampToValueAtTime")]
+    fn exponential_ramp_to_value_at_time(
+        slf: PyRef<'_, Self>,
+        value: f32,
+        end_time: f64,
+    ) -> PyResult<Py<Self>> {
         catch_web_audio_panic(|| {
-            self.0.exponential_ramp_to_value_at_time(value, end_time);
-        })
+            slf.0.exponential_ramp_to_value_at_time(value, end_time);
+        })?;
+        Ok(slf.into())
     }
 
-    fn set_target_at_time(&self, value: f32, start_time: f64, time_constant: f64) -> PyResult<()> {
+    #[pyo3(name = "setTargetAtTime")]
+    fn set_target_at_time(
+        slf: PyRef<'_, Self>,
+        value: f32,
+        start_time: f64,
+        time_constant: f64,
+    ) -> PyResult<Py<Self>> {
         catch_web_audio_panic(|| {
-            self.0.set_target_at_time(value, start_time, time_constant);
-        })
+            slf.0.set_target_at_time(value, start_time, time_constant);
+        })?;
+        Ok(slf.into())
     }
 
-    fn cancel_scheduled_values(&self, cancel_time: f64) -> PyResult<()> {
+    #[pyo3(name = "cancelScheduledValues")]
+    fn cancel_scheduled_values(slf: PyRef<'_, Self>, cancel_time: f64) -> PyResult<Py<Self>> {
         catch_web_audio_panic(|| {
-            self.0.cancel_scheduled_values(cancel_time);
-        })
+            slf.0.cancel_scheduled_values(cancel_time);
+        })?;
+        Ok(slf.into())
     }
 
-    fn cancel_and_hold_at_time(&self, cancel_time: f64) -> PyResult<()> {
+    #[pyo3(name = "cancelAndHoldAtTime")]
+    fn cancel_and_hold_at_time(slf: PyRef<'_, Self>, cancel_time: f64) -> PyResult<Py<Self>> {
         catch_web_audio_panic(|| {
-            self.0.cancel_and_hold_at_time(cancel_time);
-        })
+            slf.0.cancel_and_hold_at_time(cancel_time);
+        })?;
+        Ok(slf.into())
     }
 
+    #[pyo3(name = "setValueCurveAtTime")]
     fn set_value_curve_at_time(
-        &self,
+        slf: PyRef<'_, Self>,
         values: Vec<f32>,
         start_time: f64,
         duration: f64,
-    ) -> PyResult<()> {
+    ) -> PyResult<Py<Self>> {
         catch_web_audio_panic(|| {
-            self.0
-                .set_value_curve_at_time(&values, start_time, duration);
-        })
+            slf.0.set_value_curve_at_time(&values, start_time, duration);
+        })?;
+        Ok(slf.into())
     }
 }
 
@@ -302,24 +345,22 @@ impl OscillatorNode {
     }
 
     #[getter]
-    fn type_(&self) -> PyResult<String> {
+    fn r#type(&self) -> PyResult<String> {
         Ok(oscillator_type_to_str(self.0.lock().unwrap().type_()).to_owned())
     }
 
     #[setter]
-    fn set_type_(&mut self, value: &str) -> PyResult<()> {
-        self.set_type(value)
-    }
-
     fn set_type(&mut self, value: &str) -> PyResult<()> {
         let value = oscillator_type_from_str(value)?;
         catch_web_audio_panic(|| self.0.lock().unwrap().set_type(value))
     }
 
+    #[getter]
     fn frequency(&self) -> AudioParam {
         AudioParam(self.0.lock().unwrap().frequency().clone())
     }
 
+    #[getter]
     fn detune(&self) -> AudioParam {
         AudioParam(self.0.lock().unwrap().detune().clone())
     }

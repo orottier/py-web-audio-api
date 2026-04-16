@@ -23,10 +23,10 @@ Try the binding:
 ```python
 import web_audio_api
 ctx = web_audio_api.AudioContext()
-osc = web_audio_api.OscillatorNode(ctx)
-osc.connect(ctx.destination())
+osc = ctx.createOscillator()
+osc.connect(ctx.destination)
 osc.start()
-osc.frequency().value = 300
+osc.frequency.value = 300
 ```
 
 ## Build
