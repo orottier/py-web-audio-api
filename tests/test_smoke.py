@@ -263,6 +263,32 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         )
         self.assertGreater(custom_latency_ctx.sampleRate, 0.0)
 
+    def test_audio_context_onsinkchange_property_works(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        marker = object()
+
+        self.assertIsNone(ctx.onsinkchange)
+        ctx.onsinkchange = marker
+        self.assertIs(ctx.onsinkchange, marker)
+        ctx.onsinkchange = None
+        self.assertIsNone(ctx.onsinkchange)
+
+    def test_audio_context_onsinkchange_manual_dispatch_works(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        calls = []
+
+        def onsinkchange(event):
+            calls.append(event)
+
+        ctx.onsinkchange = onsinkchange
+        self.assertTrue(ctx.dispatchEvent(web_audio_api.Event("sinkchange")))
+
+        self.assertEqual(len(calls), 1)
+        self.assertIsInstance(calls[0], web_audio_api.Event)
+        self.assertEqual(calls[0].type, "sinkchange")
+        self.assertIs(calls[0].target, ctx)
+        self.assertIs(calls[0].currentTarget, ctx)
+
     def test_offline_oscillator_graph_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         osc = ctx.createOscillator()

@@ -198,6 +198,24 @@ pub(crate) fn audio_context_options(
     Ok(parsed)
 }
 
+impl AudioContext {
+    pub(crate) fn clear_onsinkchange(&self) {
+        self.0.lock().unwrap().clear_onsinkchange();
+    }
+
+    pub(crate) fn set_onsinkchange_registry(&self, registry: Arc<Mutex<EventTargetRegistry>>) {
+        self.0.lock().unwrap().set_onsinkchange(move |_| {
+            Python::attach(|py| {
+                if let Err(err) =
+                    EventTarget::dispatch_from_registry(py, &registry, "sinkchange", None, None)
+                {
+                    err.print(py);
+                }
+            });
+        });
+    }
+}
+
 #[pymethods]
 impl BaseAudioContext {
     #[getter]
@@ -619,6 +637,23 @@ pub(crate) struct AudioContext(pub(crate) Arc<Mutex<web_audio_api_rs::context::A
 
 #[pymethods]
 impl AudioContext {
+    #[getter]
+    pub(crate) fn onsinkchange(slf: PyRef<'_, Self>, py: Python<'_>) -> Py<PyAny> {
+        slf.as_super().as_super().event_handler(py, "sinkchange")
+    }
+
+    #[setter]
+    pub(crate) fn set_onsinkchange(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let owner = EventTarget::owner_from_ptr(slf.py(), slf.as_ptr());
+        slf.as_super().as_super().set_owner(owner);
+        let registry = slf.as_super().as_super().registry();
+        slf.as_super()
+            .as_super()
+            .set_event_handler("sinkchange", value);
+        slf.clear_onsinkchange();
+        slf.set_onsinkchange_registry(registry);
+    }
+
     #[new]
     #[pyo3(signature = (options=None))]
     pub(crate) fn new(options: Option<&Bound<'_, PyAny>>) -> PyResult<PyClassInitializer<Self>> {
