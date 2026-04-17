@@ -32,6 +32,31 @@ fn get_user_media_sync(constraints: Option<&Bound<'_, PyAny>>) -> PyResult<Media
     Ok(MediaStream(stream))
 }
 
+#[pyfunction(name = "enumerateDevicesSync")]
+fn enumerate_devices_sync() -> PyResult<Vec<MediaDeviceInfo>> {
+    let devices =
+        catch_web_audio_panic_result(web_audio_api_rs::media_devices::enumerate_devices_sync)?;
+    Ok(devices
+        .into_iter()
+        .map(|device| MediaDeviceInfo {
+            device_id: device.device_id().to_owned(),
+            group_id: device.group_id().map(str::to_owned),
+            kind: match device.kind() {
+                web_audio_api_rs::media_devices::MediaDeviceInfoKind::VideoInput => {
+                    "videoinput".to_owned()
+                }
+                web_audio_api_rs::media_devices::MediaDeviceInfoKind::AudioInput => {
+                    "audioinput".to_owned()
+                }
+                web_audio_api_rs::media_devices::MediaDeviceInfoKind::AudioOutput => {
+                    "audiooutput".to_owned()
+                }
+            },
+            label: device.label().to_owned(),
+        })
+        .collect())
+}
+
 /// A Python module implemented in Rust.
 #[pymodule]
 fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -41,6 +66,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<OfflineAudioCompletionEvent>()?;
     m.add_class::<AudioProcessingEvent>()?;
     m.add_class::<AudioBuffer>()?;
+    m.add_class::<MediaDeviceInfo>()?;
     m.add_class::<MediaStream>()?;
     m.add_class::<MediaStreamTrack>()?;
     m.add_class::<PeriodicWave>()?;
@@ -70,6 +96,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
     m.add_function(wrap_pyfunction!(get_user_media_sync, m)?)?;
+    m.add_function(wrap_pyfunction!(enumerate_devices_sync, m)?)?;
     Ok(())
 }
 

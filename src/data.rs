@@ -8,6 +8,15 @@ pub(crate) struct MediaStream(pub(crate) web_audio_api_rs::media_streams::MediaS
 #[derive(Clone)]
 pub(crate) struct MediaStreamTrack(pub(crate) web_audio_api_rs::media_streams::MediaStreamTrack);
 
+#[pyclass]
+#[derive(Debug)]
+pub(crate) struct MediaDeviceInfo {
+    pub(crate) device_id: String,
+    pub(crate) group_id: Option<String>,
+    pub(crate) kind: String,
+    pub(crate) label: String,
+}
+
 #[pymethods]
 impl MediaStream {
     #[pyo3(name = "getTracks")]
@@ -41,6 +50,29 @@ impl MediaStreamTrack {
     #[pyo3(name = "close")]
     pub(crate) fn close(&self) {
         self.0.close();
+    }
+}
+
+#[pymethods]
+impl MediaDeviceInfo {
+    #[getter(deviceId)]
+    pub(crate) fn device_id(&self) -> &str {
+        &self.device_id
+    }
+
+    #[getter(groupId)]
+    pub(crate) fn group_id(&self) -> Option<&str> {
+        self.group_id.as_deref()
+    }
+
+    #[getter]
+    pub(crate) fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    #[getter]
+    pub(crate) fn label(&self) -> &str {
+        &self.label
     }
 }
 

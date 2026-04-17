@@ -405,6 +405,20 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             track.close()
             stream.close()
 
+    def test_enumerate_devices_sync_entrypoint_is_wired(self):
+        try:
+            devices = web_audio_api.enumerateDevicesSync()
+        except RuntimeError as exc:
+            self.assertNotIsInstance(exc, TypeError)
+        else:
+            self.assertIsInstance(devices, list)
+            if devices:
+                device = devices[0]
+                self.assertIsInstance(device, web_audio_api.MediaDeviceInfo)
+                self.assertIn(device.kind, ("videoinput", "audioinput", "audiooutput"))
+                self.assertIsInstance(device.deviceId, str)
+                self.assertIsInstance(device.label, str)
+
     def test_create_script_processor_passes_zero_buffer_size_through(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
 
@@ -939,7 +953,8 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             src = ctx.createConstantSource()
             src.connect(ctx.destination)
             src.start()
-            suspend_task = ctx.suspend(0.05)
+            suspend_task = asyncio.ensure_future(ctx.suspend(0.05))
+            await asyncio.sleep(0)
             render_task = asyncio.ensure_future(ctx.startRendering())
             await suspend_task
             self.assertEqual(ctx.state, "suspended")
