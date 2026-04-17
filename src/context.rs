@@ -9,7 +9,7 @@ pub(crate) enum BaseAudioContextInner {
 #[pyclass]
 pub(crate) struct AudioListener(pub(crate) web_audio_api_rs::AudioListener);
 
-#[pyclass(subclass)]
+#[pyclass(extends = EventTarget, subclass)]
 pub(crate) struct BaseAudioContext {
     inner: BaseAudioContextInner,
 }
@@ -42,6 +42,62 @@ impl BaseAudioContext {
             BaseAudioContextInner::Realtime(ctx) => AudioListener(ctx.lock().unwrap().listener()),
             BaseAudioContextInner::Offline(ctx) => AudioListener(ctx.lock().unwrap().listener()),
             BaseAudioContextInner::Concrete(ctx) => AudioListener(ctx.listener()),
+        }
+    }
+
+    pub(crate) fn clear_onstatechange(&self) {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => ctx.lock().unwrap().clear_onstatechange(),
+            BaseAudioContextInner::Offline(ctx) => ctx.lock().unwrap().clear_onstatechange(),
+            BaseAudioContextInner::Concrete(ctx) => ctx.clear_onstatechange(),
+        }
+    }
+
+    pub(crate) fn set_onstatechange_registry(&self, registry: Arc<Mutex<EventTargetRegistry>>) {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => {
+                ctx.lock().unwrap().set_onstatechange(move |_| {
+                    Python::attach(|py| {
+                        if let Err(err) = EventTarget::dispatch_from_registry(
+                            py,
+                            &registry,
+                            "statechange",
+                            None,
+                            None,
+                        ) {
+                            err.print(py);
+                        }
+                    });
+                })
+            }
+            BaseAudioContextInner::Offline(ctx) => {
+                ctx.lock().unwrap().set_onstatechange(move |_| {
+                    Python::attach(|py| {
+                        if let Err(err) = EventTarget::dispatch_from_registry(
+                            py,
+                            &registry,
+                            "statechange",
+                            None,
+                            None,
+                        ) {
+                            err.print(py);
+                        }
+                    });
+                })
+            }
+            BaseAudioContextInner::Concrete(ctx) => ctx.set_onstatechange(move |_| {
+                Python::attach(|py| {
+                    if let Err(err) = EventTarget::dispatch_from_registry(
+                        py,
+                        &registry,
+                        "statechange",
+                        None,
+                        None,
+                    ) {
+                        err.print(py);
+                    }
+                });
+            }),
         }
     }
 }
@@ -111,6 +167,19 @@ pub(crate) fn audio_context_options(
 
 #[pymethods]
 impl BaseAudioContext {
+    #[getter]
+    pub(crate) fn onstatechange(slf: PyRef<'_, Self>, py: Python<'_>) -> Py<PyAny> {
+        slf.as_super().event_handler(py, "statechange")
+    }
+
+    #[setter]
+    pub(crate) fn set_onstatechange(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let registry = slf.as_super().registry();
+        slf.as_super().set_event_handler("statechange", value);
+        slf.clear_onstatechange();
+        slf.set_onstatechange_registry(registry);
+    }
+
     #[getter]
     pub(crate) fn destination(&self, py: Python<'_>) -> PyResult<Py<AudioDestinationNode>> {
         match &self.inner {
@@ -521,12 +590,11 @@ impl AudioContext {
         let options = audio_context_options(options)?;
         let ctx =
             catch_web_audio_panic_result(|| Arc::new(Mutex::new(new_realtime_context(options))))?;
-        Ok(
-            PyClassInitializer::from(BaseAudioContext::new(BaseAudioContextInner::Realtime(
+        Ok(PyClassInitializer::from(EventTarget::new())
+            .add_subclass(BaseAudioContext::new(BaseAudioContextInner::Realtime(
                 Arc::clone(&ctx),
             )))
-            .add_subclass(Self(ctx)),
-        )
+            .add_subclass(Self(ctx)))
     }
 }
 
@@ -550,10 +618,11 @@ impl OfflineAudioContext {
                 sample_rate,
             ),
         ));
-        PyClassInitializer::from(BaseAudioContext::new(BaseAudioContextInner::Offline(
-            Arc::clone(&ctx),
-        )))
-        .add_subclass(Self(ctx))
+        PyClassInitializer::from(EventTarget::new())
+            .add_subclass(BaseAudioContext::new(BaseAudioContextInner::Offline(
+                Arc::clone(&ctx),
+            )))
+            .add_subclass(Self(ctx))
     }
 
     #[pyo3(name = "startRendering")]

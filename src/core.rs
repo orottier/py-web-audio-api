@@ -339,7 +339,9 @@ impl AudioNode {
         let node = lock_audio_node(&self.0)?;
         Py::new(
             py,
-            BaseAudioContext::new(BaseAudioContextInner::Concrete(node.context().clone())),
+            PyClassInitializer::from(EventTarget::new()).add_subclass(BaseAudioContext::new(
+                BaseAudioContextInner::Concrete(node.context().clone()),
+            )),
         )
     }
 

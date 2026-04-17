@@ -43,6 +43,8 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         audio_ctx = web_audio_api.AudioContext({"sinkId": "none"})
         offline_ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
 
+        self.assertIsInstance(audio_ctx, web_audio_api.EventTarget)
+        self.assertIsInstance(offline_ctx, web_audio_api.EventTarget)
         self.assertIsInstance(audio_ctx, web_audio_api.BaseAudioContext)
         self.assertIsInstance(offline_ctx, web_audio_api.BaseAudioContext)
         self.assertIsInstance(audio_ctx, web_audio_api.AudioContext)
@@ -167,6 +169,44 @@ class WebAudioApiSmokeTest(unittest.TestCase):
     def test_audio_context_does_not_expose_start_rendering(self):
         ctx = web_audio_api.AudioContext({"sinkId": "none"})
         self.assertFalse(hasattr(ctx, "startRendering"))
+
+    def test_base_audio_context_onstatechange_property_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        marker = object()
+
+        self.assertIsNone(ctx.onstatechange)
+        ctx.onstatechange = marker
+        self.assertIs(ctx.onstatechange, marker)
+        ctx.onstatechange = None
+        self.assertIsNone(ctx.onstatechange)
+
+    def test_base_audio_context_onstatechange_callback_fires(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 512, 44_100.0)
+        calls = []
+
+        def onstatechange(event):
+            calls.append(event)
+
+        ctx.onstatechange = onstatechange
+        ctx.startRendering()
+
+        self.assertGreaterEqual(len(calls), 1)
+        self.assertTrue(all(isinstance(event, web_audio_api.Event) for event in calls))
+        self.assertTrue(all(event.type == "statechange" for event in calls))
+        self.assertTrue(all(event.target is None for event in calls))
+        self.assertTrue(all(event.currentTarget is None for event in calls))
+
+    def test_base_audio_context_manual_dispatch_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        calls = []
+
+        def listener(event):
+            calls.append(event.type)
+
+        ctx.addEventListener("statechange", listener)
+        self.assertTrue(ctx.dispatchEvent(web_audio_api.Event("statechange")))
+        ctx.removeEventListener("statechange", listener)
+        self.assertEqual(calls, ["statechange"])
 
     def test_audio_context_options_are_accepted(self):
         for constructor in (lambda: web_audio_api.AudioContext(), lambda: web_audio_api.AudioContext(None)):
