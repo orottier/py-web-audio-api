@@ -19,6 +19,22 @@ pub(crate) struct MediaStream(pub(crate) web_audio_api_rs::media_streams::MediaS
 pub(crate) struct MediaStreamTrack(pub(crate) web_audio_api_rs::media_streams::MediaStreamTrack);
 
 #[pyclass]
+pub(crate) struct MediaStreamTrackBufferIterator {
+    iter: Mutex<
+        Box<
+            dyn Iterator<
+                    Item = Result<
+                        web_audio_api_rs::AudioBuffer,
+                        Box<dyn std::error::Error + Send + Sync>,
+                    >,
+                > + Send
+                + Sync
+                + 'static,
+        >,
+    >,
+}
+
+#[pyclass]
 #[derive(Debug)]
 pub(crate) struct MediaDeviceInfo {
     pub(crate) device_id: String,
@@ -1149,6 +1165,19 @@ pub(crate) fn registered_worklet_descriptors(
 
 #[pymethods]
 impl MediaStream {
+    #[pyo3(name = "iterBuffers")]
+    pub(crate) fn iter_buffers(&self) -> PyResult<MediaStreamTrackBufferIterator> {
+        let track = self
+            .0
+            .get_tracks()
+            .first()
+            .cloned()
+            .ok_or_else(|| PyRuntimeError::new_err("MediaStream has no tracks"))?;
+        Ok(MediaStreamTrackBufferIterator {
+            iter: Mutex::new(Box::new(track.iter())),
+        })
+    }
+
     #[pyo3(name = "getTracks")]
     pub(crate) fn get_tracks(&self) -> Vec<MediaStreamTrack> {
         self.0
@@ -1169,6 +1198,13 @@ impl MediaStream {
 
 #[pymethods]
 impl MediaStreamTrack {
+    #[pyo3(name = "iterBuffers")]
+    pub(crate) fn iter_buffers(&self) -> MediaStreamTrackBufferIterator {
+        MediaStreamTrackBufferIterator {
+            iter: Mutex::new(Box::new(self.0.iter())),
+        }
+    }
+
     #[getter(readyState)]
     pub(crate) fn ready_state(&self) -> &'static str {
         match self.0.ready_state() {
@@ -1180,6 +1216,21 @@ impl MediaStreamTrack {
     #[pyo3(name = "close")]
     pub(crate) fn close(&self) {
         self.0.close();
+    }
+}
+
+#[pymethods]
+impl MediaStreamTrackBufferIterator {
+    pub(crate) fn __iter__(slf: PyRef<'_, Self>) -> Py<Self> {
+        slf.into()
+    }
+
+    pub(crate) fn __next__(&self) -> PyResult<Option<AudioBuffer>> {
+        match self.iter.lock().unwrap().next() {
+            Some(Ok(buffer)) => Ok(Some(AudioBuffer::owned(buffer))),
+            Some(Err(err)) => Err(PyRuntimeError::new_err(err.to_string())),
+            None => Ok(None),
+        }
     }
 }
 

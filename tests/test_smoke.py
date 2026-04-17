@@ -637,6 +637,47 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertIsInstance(tracks[0], web_audio_api.MediaStreamTrack)
         stream.close()
 
+    def test_media_stream_track_iter_buffers_consumes_graph_output(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        src = ctx.createConstantSource()
+        src.offset.value = 0.25
+        dest = ctx.createMediaStreamDestination()
+        iterator = dest.stream.getTracks()[0].iterBuffers()
+
+        src.connect(dest)
+        src.start()
+        self.run_async(lambda: ctx.resume())
+
+        buffer = next(iterator)
+
+        self.assertIsInstance(buffer, web_audio_api.AudioBuffer)
+        self.assertGreater(buffer.length, 0)
+        samples = buffer.getChannelData(0)
+        self.assertTrue(any(abs(sample) > 1e-4 for sample in samples))
+
+        src.stop()
+        dest.stream.close()
+        self.run_async(lambda: ctx.close())
+
+    def test_media_stream_iter_buffers_uses_first_track(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        src = ctx.createConstantSource()
+        src.offset.value = 0.2
+        dest = ctx.createMediaStreamDestination()
+
+        src.connect(dest)
+        src.start()
+        self.run_async(lambda: ctx.resume())
+
+        buffer = next(dest.stream.iterBuffers())
+
+        self.assertIsInstance(buffer, web_audio_api.AudioBuffer)
+        self.assertGreater(buffer.length, 0)
+
+        src.stop()
+        dest.stream.close()
+        self.run_async(lambda: ctx.close())
+
     def test_media_stream_audio_source_surface_is_wired(self):
         src_ctx = web_audio_api.AudioContext({"sinkId": "none"})
         dest_ctx = web_audio_api.AudioContext({"sinkId": "none"})

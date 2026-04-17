@@ -105,6 +105,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<MediaRecorder>()?;
     m.add_class::<MediaStream>()?;
     m.add_class::<MediaStreamTrack>()?;
+    m.add_class::<MediaStreamTrackBufferIterator>()?;
     m.add_class::<PeriodicWave>()?;
     m.add_class::<AudioListener>()?;
     m.add_class::<Event>()?;
