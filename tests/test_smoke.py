@@ -619,6 +619,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             node = ctx.createMediaStreamTrackSource(track)
             self.assertIsInstance(node, web_audio_api.MediaStreamTrackAudioSourceNode)
             self.assertIsInstance(node, web_audio_api.AudioNode)
+            self.assertIsInstance(node.mediaStreamTrack, web_audio_api.MediaStreamTrack)
             track.close()
             stream.close()
 
@@ -635,6 +636,98 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertGreaterEqual(len(tracks), 1)
         self.assertIsInstance(tracks[0], web_audio_api.MediaStreamTrack)
         stream.close()
+
+    def test_media_stream_audio_source_surface_is_wired(self):
+        src_ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        dest_ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        upstream = src_ctx.createMediaStreamDestination()
+        stream = upstream.stream
+
+        node = dest_ctx.createMediaStreamSource(stream)
+
+        self.assertIsInstance(node, web_audio_api.MediaStreamAudioSourceNode)
+        self.assertIsInstance(node.mediaStream, web_audio_api.MediaStream)
+
+        stream.close()
+        self.run_async(lambda: src_ctx.close())
+        self.run_async(lambda: dest_ctx.close())
+
+    def test_media_stream_can_flow_between_audio_contexts(self):
+        producer_ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        consumer_ctx = web_audio_api.AudioContext({"sinkId": "none"})
+
+        osc = producer_ctx.createOscillator()
+        osc.frequency.value = 220.0
+        gain = producer_ctx.createGain()
+        gain.gain.value = 0.08
+        producer_dest = producer_ctx.createMediaStreamDestination()
+
+        osc.connect(gain)
+        gain.connect(producer_dest)
+
+        consumer_source = consumer_ctx.createMediaStreamSource(producer_dest.stream)
+        consumer_dest = consumer_ctx.createMediaStreamDestination()
+        recorder = web_audio_api.MediaRecorder(consumer_dest.stream)
+
+        chunks = []
+        stop_event = threading.Event()
+        recorder.ondataavailable = lambda event: chunks.append(event.data.bytes())
+        recorder.onstop = lambda event: stop_event.set()
+
+        consumer_source.connect(consumer_dest)
+
+        osc.start()
+        self.run_async(lambda: producer_ctx.resume())
+        self.run_async(lambda: consumer_ctx.resume())
+        recorder.start()
+        time.sleep(0.1)
+        recorder.stop()
+
+        self.assertTrue(stop_event.wait(1.0))
+        self.assertTrue(any(len(chunk) > 0 for chunk in chunks))
+
+        osc.stop()
+        producer_dest.stream.close()
+        consumer_dest.stream.close()
+        self.run_async(lambda: producer_ctx.close())
+        self.run_async(lambda: consumer_ctx.close())
+
+    def test_media_stream_track_can_flow_between_audio_contexts(self):
+        producer_ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        consumer_ctx = web_audio_api.AudioContext({"sinkId": "none"})
+
+        src = producer_ctx.createConstantSource()
+        src.offset.value = 0.2
+        producer_dest = producer_ctx.createMediaStreamDestination()
+        src.connect(producer_dest)
+
+        track = producer_dest.stream.getTracks()[0]
+        consumer_source = consumer_ctx.createMediaStreamTrackSource(track)
+        consumer_dest = consumer_ctx.createMediaStreamDestination()
+        recorder = web_audio_api.MediaRecorder(consumer_dest.stream)
+
+        chunks = []
+        stop_event = threading.Event()
+        recorder.ondataavailable = lambda event: chunks.append(event.data.bytes())
+        recorder.onstop = lambda event: stop_event.set()
+
+        consumer_source.connect(consumer_dest)
+
+        src.start()
+        self.run_async(lambda: producer_ctx.resume())
+        self.run_async(lambda: consumer_ctx.resume())
+        recorder.start()
+        time.sleep(0.1)
+        recorder.stop()
+
+        self.assertTrue(stop_event.wait(1.0))
+        self.assertTrue(any(len(chunk) > 0 for chunk in chunks))
+
+        src.stop()
+        producer_dest.stream.close()
+        consumer_dest.stream.close()
+        self.run_async(lambda: producer_ctx.close())
+        self.run_async(lambda: consumer_ctx.close())
 
     def test_media_recorder_records_stream_destination_output(self):
         ctx = web_audio_api.AudioContext({"sinkId": "none"})
