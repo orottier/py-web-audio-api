@@ -715,6 +715,21 @@ impl AudioContext {
         slf.as_super().as_super().event_handler(py, "sinkchange")
     }
 
+    #[getter(baseLatency)]
+    pub(crate) fn base_latency(&self) -> f64 {
+        self.0.lock().unwrap().base_latency()
+    }
+
+    #[getter(outputLatency)]
+    pub(crate) fn output_latency(&self) -> f64 {
+        self.0.lock().unwrap().output_latency()
+    }
+
+    #[getter(sinkId)]
+    pub(crate) fn sink_id(&self) -> String {
+        self.0.lock().unwrap().sink_id()
+    }
+
     #[setter]
     pub(crate) fn set_onsinkchange(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
         let owner = EventTarget::owner_from_ptr(slf.py(), slf.as_ptr());

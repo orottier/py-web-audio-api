@@ -252,7 +252,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
 
         ctx = web_audio_api.AudioContext(
             {
-                "sinkId": "none",
+                "sinkId": {"type": "none"},
                 "sampleRate": 8_000.0,
                 "latencyHint": "playback",
                 "renderSizeHint": "default",
@@ -260,6 +260,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         )
 
         self.assertEqual(ctx.sampleRate, 8_000.0)
+        self.assertEqual(ctx.sinkId, "none")
 
         custom_latency_ctx = web_audio_api.AudioContext(
             {"sinkId": "none", "latencyHint": 0.25}
@@ -271,6 +272,9 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         marker = object()
 
         self.assertIsNone(ctx.onsinkchange)
+        self.assertEqual(ctx.baseLatency, 0.0)
+        self.assertGreaterEqual(ctx.outputLatency, 0.0)
+        self.assertEqual(ctx.sinkId, "none")
         ctx.onsinkchange = marker
         self.assertIs(ctx.onsinkchange, marker)
         ctx.onsinkchange = None
