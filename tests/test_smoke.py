@@ -120,6 +120,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertIsInstance(offline_ctx.destination, web_audio_api.AudioDestinationNode)
         self.assertIsInstance(audio_ctx.listener, web_audio_api.AudioListener)
         self.assertIsInstance(offline_ctx.listener, web_audio_api.AudioListener)
+        self.run_async(lambda: audio_ctx.close())
 
     def test_audio_destination_and_listener_work(self):
         ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
@@ -304,13 +305,17 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(calls, ["statechange"])
 
     def test_audio_context_options_are_accepted(self):
-        for constructor in (lambda: web_audio_api.AudioContext(), lambda: web_audio_api.AudioContext(None)):
+        for constructor in (
+            lambda: web_audio_api.AudioContext({"sinkId": "none"}),
+            lambda: web_audio_api.AudioContext({"sinkId": "none"}),
+        ):
             try:
                 ctx = constructor()
             except RuntimeError as exc:
                 self.assertNotIsInstance(exc, TypeError)
             else:
                 self.assertGreater(ctx.sampleRate, 0.0)
+                self.run_async(lambda: ctx.close())
 
         ctx = web_audio_api.AudioContext(
             {
@@ -323,11 +328,13 @@ class WebAudioApiSmokeTest(unittest.TestCase):
 
         self.assertEqual(ctx.sampleRate, 8_000.0)
         self.assertEqual(ctx.sinkId, "none")
+        self.run_async(lambda: ctx.close())
 
         custom_latency_ctx = web_audio_api.AudioContext(
             {"sinkId": "none", "latencyHint": 0.25}
         )
         self.assertGreater(custom_latency_ctx.sampleRate, 0.0)
+        self.run_async(lambda: custom_latency_ctx.close())
 
     def test_audio_context_onsinkchange_property_works(self):
         ctx = web_audio_api.AudioContext({"sinkId": "none"})
@@ -341,6 +348,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertIs(ctx.onsinkchange, marker)
         ctx.onsinkchange = None
         self.assertIsNone(ctx.onsinkchange)
+        self.run_async(lambda: ctx.close())
 
     def test_audio_context_onsinkchange_manual_dispatch_works(self):
         ctx = web_audio_api.AudioContext({"sinkId": "none"})
@@ -357,6 +365,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(calls[0].type, "sinkchange")
         self.assertIs(calls[0].target, ctx)
         self.assertIs(calls[0].currentTarget, ctx)
+        self.run_async(lambda: ctx.close())
 
     def test_audio_context_async_state_methods_work(self):
         ctx = web_audio_api.AudioContext({"sinkId": "none"})
@@ -412,6 +421,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertIsInstance(offline_node, web_audio_api.ScriptProcessorNode)
         self.assertEqual(realtime_node.bufferSize, 256)
         self.assertEqual(offline_node.bufferSize, 256)
+        self.run_async(lambda: realtime.close())
 
     def test_audio_worklet_registration_validates_shape(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
