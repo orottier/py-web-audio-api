@@ -28,7 +28,7 @@ async def main():
     print("Press Ctrl-C to stop.")
 
     try:
-        while not media.paused:
+        while True:
             await asyncio.sleep(0.1)
     except KeyboardInterrupt:
         print("\nStopping playback...")
