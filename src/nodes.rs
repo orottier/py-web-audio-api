@@ -654,6 +654,18 @@ pub(crate) fn panner_node_py(
     )
 }
 
+pub(crate) fn script_processor_node_py(
+    py: Python<'_>,
+    ctx: &impl RsBaseAudioContext,
+    options: web_audio_api_rs::node::ScriptProcessorOptions,
+) -> PyResult<Py<ScriptProcessorNode>> {
+    new_audio_node_py(
+        py,
+        web_audio_api_rs::node::ScriptProcessorNode::new(ctx, options),
+        ScriptProcessorNode,
+    )
+}
+
 #[cfg(test)]
 pub(crate) fn oscillator_node_parts(
     ctx: &impl RsBaseAudioContext,
@@ -759,7 +771,7 @@ pub(crate) fn audio_buffer_source_options(
 
     if let Some(buffer) = options.get_item("buffer")? {
         if !buffer.is_none() {
-            parsed.buffer = Some(buffer.extract::<PyRef<'_, AudioBuffer>>()?.0.clone());
+            parsed.buffer = Some(buffer.extract::<PyRef<'_, AudioBuffer>>()?.snapshot()?);
         }
     }
     if let Some(detune) = options.get_item("detune")? {
@@ -836,7 +848,7 @@ pub(crate) fn convolver_options(
 
     if let Some(buffer) = options.get_item("buffer")? {
         if !buffer.is_none() {
-            parsed.buffer = Some(buffer.extract::<PyRef<'_, AudioBuffer>>()?.0.clone());
+            parsed.buffer = Some(buffer.extract::<PyRef<'_, AudioBuffer>>()?.snapshot()?);
         }
     }
     if let Some(normalize) = options.get_item("normalize")? {
@@ -1465,6 +1477,54 @@ impl AudioScheduledSourceNode {
     }
 }
 
+#[pyclass(extends = Event)]
+pub(crate) struct AudioProcessingEvent {
+    event: Arc<Mutex<Option<web_audio_api_rs::AudioProcessingEvent>>>,
+}
+
+impl AudioProcessingEvent {
+    fn with_event<T>(
+        &self,
+        f: impl FnOnce(&web_audio_api_rs::AudioProcessingEvent) -> PyResult<T>,
+    ) -> PyResult<T> {
+        let guard = self.event.lock().unwrap();
+        let event = guard.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "AudioProcessingEvent is no longer available after the callback returns",
+            )
+        })?;
+        f(event)
+    }
+}
+
+#[pymethods]
+impl AudioProcessingEvent {
+    #[getter(playbackTime)]
+    pub(crate) fn playback_time(&self) -> PyResult<f64> {
+        self.with_event(|event| Ok(event.playback_time))
+    }
+
+    #[getter(inputBuffer)]
+    pub(crate) fn input_buffer(&self) -> PyResult<AudioBuffer> {
+        self.with_event(|_| {
+            Ok(AudioBuffer::audio_processing(
+                Arc::clone(&self.event),
+                AudioProcessingBufferKind::Input,
+            ))
+        })
+    }
+
+    #[getter(outputBuffer)]
+    pub(crate) fn output_buffer(&self) -> PyResult<AudioBuffer> {
+        self.with_event(|_| {
+            Ok(AudioBuffer::audio_processing(
+                Arc::clone(&self.event),
+                AudioProcessingBufferKind::Output,
+            ))
+        })
+    }
+}
+
 #[pyclass(extends = AudioScheduledSourceNode)]
 pub(crate) struct AudioBufferSourceNode(
     pub(crate) Arc<Mutex<web_audio_api_rs::node::AudioBufferSourceNode>>,
@@ -1495,14 +1555,20 @@ impl AudioBufferSourceNode {
 
     #[getter]
     pub(crate) fn buffer(&self) -> Option<AudioBuffer> {
-        self.0.lock().unwrap().buffer().cloned().map(AudioBuffer)
+        self.0
+            .lock()
+            .unwrap()
+            .buffer()
+            .cloned()
+            .map(AudioBuffer::owned)
     }
 
     #[setter]
     pub(crate) fn set_buffer(&mut self, value: Option<PyRef<'_, AudioBuffer>>) -> PyResult<()> {
         if let Some(buffer) = value {
+            let buffer = buffer.snapshot()?;
             catch_web_audio_panic(|| {
-                self.0.lock().unwrap().set_buffer(buffer.0.clone());
+                self.0.lock().unwrap().set_buffer(buffer);
             })?;
         }
         Ok(())
@@ -1571,6 +1637,122 @@ impl AudioBufferSourceNode {
 
 #[pyclass(extends = AudioNode)]
 pub(crate) struct AnalyserNode(pub(crate) Arc<Mutex<web_audio_api_rs::node::AnalyserNode>>);
+
+#[pyclass(extends = AudioNode)]
+pub(crate) struct ScriptProcessorNode(
+    pub(crate) Arc<Mutex<web_audio_api_rs::node::ScriptProcessorNode>>,
+);
+
+impl ScriptProcessorNode {
+    pub(crate) fn clear_onaudioprocess(&self) {
+        self.0.lock().unwrap().clear_onaudioprocess();
+    }
+
+    pub(crate) fn set_onaudioprocess_registry(&self, registry: Arc<Mutex<EventTargetRegistry>>) {
+        self.0.lock().unwrap().set_onaudioprocess(move |event| {
+            Python::attach(|py| {
+                let owner = EventTarget::owner_for_registry(py, &registry);
+                let event_state = Arc::new(Mutex::new(Some(event)));
+                let event_obj = Py::new(
+                    py,
+                    PyClassInitializer::from(Event::new_dispatched(
+                        "audioprocess",
+                        owner.as_ref().map(|owner| owner.clone_ref(py)),
+                        owner,
+                    ))
+                    .add_subclass(AudioProcessingEvent {
+                        event: Arc::clone(&event_state),
+                    }),
+                );
+
+                match event_obj {
+                    Ok(event_obj) => {
+                        if let Err(err) = EventTarget::dispatch_event_object(
+                            py,
+                            &registry,
+                            "audioprocess",
+                            event_obj.into_any(),
+                        ) {
+                            err.print(py);
+                        }
+                    }
+                    Err(err) => err.print(py),
+                }
+
+                event_state.lock().unwrap().take();
+            });
+        });
+    }
+}
+
+#[pymethods]
+impl ScriptProcessorNode {
+    #[pyo3(name = "addEventListener")]
+    pub(crate) fn add_event_listener(
+        slf: PyRef<'_, Self>,
+        py: Python<'_>,
+        type_: &str,
+        listener: Py<PyAny>,
+    ) -> PyResult<()> {
+        if !listener.bind(py).is_callable() {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "listener must be callable",
+            ));
+        }
+
+        let owner = EventTarget::owner_from_ptr(py, slf.as_ptr());
+        slf.as_super().as_super().set_owner(owner);
+        let registry = slf.as_super().as_super().registry();
+        slf.as_super().as_super().add_listener(type_, listener);
+
+        if type_ == "audioprocess" {
+            slf.set_onaudioprocess_registry(registry);
+        }
+
+        Ok(())
+    }
+
+    #[pyo3(name = "removeEventListener")]
+    pub(crate) fn remove_event_listener(
+        slf: PyRef<'_, Self>,
+        py: Python<'_>,
+        type_: &str,
+        listener: Py<PyAny>,
+    ) {
+        let owner = EventTarget::owner_from_ptr(py, slf.as_ptr());
+        slf.as_super().as_super().set_owner(owner);
+        slf.as_super()
+            .as_super()
+            .remove_listener(py, type_, &listener);
+        let keep_callback = slf.as_super().as_super().has_callbacks(type_);
+
+        if type_ == "audioprocess" && !keep_callback {
+            slf.clear_onaudioprocess();
+        }
+    }
+
+    #[getter]
+    pub(crate) fn onaudioprocess(slf: PyRef<'_, Self>, py: Python<'_>) -> Py<PyAny> {
+        slf.as_super().as_super().event_handler(py, "audioprocess")
+    }
+
+    #[setter]
+    pub(crate) fn set_onaudioprocess(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let owner = EventTarget::owner_from_ptr(slf.py(), slf.as_ptr());
+        slf.as_super().as_super().set_owner(owner);
+        let registry = slf.as_super().as_super().registry();
+        slf.as_super()
+            .as_super()
+            .set_event_handler("audioprocess", value);
+        slf.clear_onaudioprocess();
+        slf.set_onaudioprocess_registry(registry);
+    }
+
+    #[getter(bufferSize)]
+    pub(crate) fn buffer_size(&self) -> usize {
+        self.0.lock().unwrap().buffer_size()
+    }
+}
 
 #[pymethods]
 impl AnalyserNode {
@@ -1696,13 +1878,19 @@ impl ConvolverNode {
 
     #[getter]
     pub(crate) fn buffer(&self) -> Option<AudioBuffer> {
-        self.0.lock().unwrap().buffer().cloned().map(AudioBuffer)
+        self.0
+            .lock()
+            .unwrap()
+            .buffer()
+            .cloned()
+            .map(AudioBuffer::owned)
     }
 
     #[setter]
     pub(crate) fn set_buffer(&mut self, value: Option<PyRef<'_, AudioBuffer>>) -> PyResult<()> {
         if let Some(buffer) = value {
-            catch_web_audio_panic(|| self.0.lock().unwrap().set_buffer(buffer.0.clone()))?;
+            let buffer = buffer.snapshot()?;
+            catch_web_audio_panic(|| self.0.lock().unwrap().set_buffer(buffer))?;
         }
         Ok(())
     }

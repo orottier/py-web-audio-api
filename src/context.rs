@@ -11,14 +11,14 @@ pub(crate) struct AudioListener(pub(crate) web_audio_api_rs::AudioListener);
 
 #[pyclass(extends = Event)]
 pub(crate) struct OfflineAudioCompletionEvent {
-    rendered_buffer: AudioBuffer,
+    rendered_buffer: web_audio_api_rs::AudioBuffer,
 }
 
 #[pymethods]
 impl OfflineAudioCompletionEvent {
     #[getter(renderedBuffer)]
     pub(crate) fn rendered_buffer(&self) -> AudioBuffer {
-        AudioBuffer(self.rendered_buffer.0.clone())
+        AudioBuffer::owned(self.rendered_buffer.clone())
     }
 }
 
@@ -128,9 +128,7 @@ fn offline_audio_completion_event_py(
             owner.as_ref().map(|owner| owner.clone_ref(py)),
             owner,
         ))
-        .add_subclass(OfflineAudioCompletionEvent {
-            rendered_buffer: AudioBuffer(rendered_buffer),
-        }),
+        .add_subclass(OfflineAudioCompletionEvent { rendered_buffer }),
     )?;
     Ok(event.into_any())
 }
@@ -273,18 +271,18 @@ impl BaseAudioContext {
         sample_rate: f32,
     ) -> AudioBuffer {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => AudioBuffer(ctx.lock().unwrap().create_buffer(
-                number_of_channels,
-                length,
-                sample_rate,
-            )),
-            BaseAudioContextInner::Offline(ctx) => AudioBuffer(ctx.lock().unwrap().create_buffer(
-                number_of_channels,
-                length,
-                sample_rate,
-            )),
+            BaseAudioContextInner::Realtime(ctx) => AudioBuffer::owned(
+                ctx.lock()
+                    .unwrap()
+                    .create_buffer(number_of_channels, length, sample_rate),
+            ),
+            BaseAudioContextInner::Offline(ctx) => AudioBuffer::owned(
+                ctx.lock()
+                    .unwrap()
+                    .create_buffer(number_of_channels, length, sample_rate),
+            ),
             BaseAudioContextInner::Concrete(ctx) => {
-                AudioBuffer(ctx.create_buffer(number_of_channels, length, sample_rate))
+                AudioBuffer::owned(ctx.create_buffer(number_of_channels, length, sample_rate))
             }
         }
     }
@@ -441,6 +439,33 @@ impl BaseAudioContext {
                 web_audio_api_rs::PeriodicWave::new(ctx, options),
             )),
         }
+    }
+
+    #[pyo3(
+        name = "createScriptProcessor",
+        signature = (buffer_size=0, number_of_input_channels=2, number_of_output_channels=2)
+    )]
+    pub(crate) fn create_script_processor(
+        &self,
+        py: Python<'_>,
+        buffer_size: usize,
+        number_of_input_channels: usize,
+        number_of_output_channels: usize,
+    ) -> PyResult<Py<ScriptProcessorNode>> {
+        let options = web_audio_api_rs::node::ScriptProcessorOptions {
+            buffer_size,
+            number_of_input_channels,
+            number_of_output_channels,
+        };
+        catch_web_audio_panic_result(|| match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => {
+                script_processor_node_py(py, &*ctx.lock().unwrap(), options)
+            }
+            BaseAudioContextInner::Offline(ctx) => {
+                script_processor_node_py(py, &*ctx.lock().unwrap(), options)
+            }
+            BaseAudioContextInner::Concrete(ctx) => script_processor_node_py(py, ctx, options),
+        })?
     }
 
     #[pyo3(name = "createDelay", signature = (max_delay_time=1.0))]
@@ -727,6 +752,8 @@ impl OfflineAudioContext {
 
     #[pyo3(name = "startRendering")]
     pub(crate) fn start_rendering(&self) -> PyResult<AudioBuffer> {
-        catch_web_audio_panic_result(|| AudioBuffer(self.0.lock().unwrap().start_rendering_sync()))
+        catch_web_audio_panic_result(|| {
+            AudioBuffer::owned(self.0.lock().unwrap().start_rendering_sync())
+        })
     }
 }

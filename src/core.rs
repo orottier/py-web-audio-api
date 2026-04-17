@@ -99,6 +99,33 @@ impl EventTarget {
         }
     }
 
+    pub(crate) fn add_listener(&self, type_: &str, listener: Py<PyAny>) {
+        self.registry
+            .lock()
+            .unwrap()
+            .listeners
+            .entry(type_.to_owned())
+            .or_default()
+            .push(listener);
+    }
+
+    pub(crate) fn remove_listener(&self, py: Python<'_>, type_: &str, listener: &Py<PyAny>) {
+        if let Some(listeners) = self.registry.lock().unwrap().listeners.get_mut(type_) {
+            let listener_ptr = listener.bind(py).as_ptr();
+            listeners.retain(|existing| existing.bind(py).as_ptr() != listener_ptr);
+        }
+    }
+
+    pub(crate) fn has_callbacks(&self, type_: &str) -> bool {
+        let registry = self.registry.lock().unwrap();
+        registry.handlers.contains_key(type_)
+            || registry
+                .listeners
+                .get(type_)
+                .map(|listeners| !listeners.is_empty())
+                .unwrap_or(false)
+    }
+
     pub(crate) fn owner_from_ptr(py: Python<'_>, ptr: *mut pyo3::ffi::PyObject) -> Py<PyAny> {
         unsafe { Bound::<PyAny>::from_borrowed_ptr(py, ptr) }.unbind()
     }
@@ -188,13 +215,7 @@ impl EventTarget {
         }
 
         slf.set_owner(Self::owner_from_ptr(py, slf.as_ptr()));
-        slf.registry
-            .lock()
-            .unwrap()
-            .listeners
-            .entry(type_.to_owned())
-            .or_default()
-            .push(listener);
+        slf.add_listener(type_, listener);
         Ok(())
     }
 
@@ -206,10 +227,7 @@ impl EventTarget {
         listener: Py<PyAny>,
     ) {
         slf.set_owner(Self::owner_from_ptr(py, slf.as_ptr()));
-        if let Some(listeners) = slf.registry.lock().unwrap().listeners.get_mut(type_) {
-            let listener_ptr = listener.bind(py).as_ptr();
-            listeners.retain(|existing| existing.bind(py).as_ptr() != listener_ptr);
-        }
+        slf.remove_listener(py, type_, &listener);
     }
 
     #[pyo3(name = "dispatchEvent")]
@@ -570,6 +588,16 @@ pub(crate) fn catch_web_audio_panic(f: impl FnOnce()) -> PyResult<()> {
     catch_web_audio_panic_result(f)
 }
 
+fn panic_message_to_pyerr(panic: Box<dyn std::any::Any + Send>) -> PyErr {
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("web-audio-api-rs panicked");
+
+    pyo3::exceptions::PyRuntimeError::new_err(message.to_owned())
+}
+
 pub(crate) fn catch_web_audio_panic_result<T>(f: impl FnOnce() -> T) -> PyResult<T> {
     let _guard = PANIC_HOOK_LOCK.lock().map_err(|_| {
         pyo3::exceptions::PyRuntimeError::new_err(
@@ -581,15 +609,11 @@ pub(crate) fn catch_web_audio_panic_result<T>(f: impl FnOnce() -> T) -> PyResult
     let result = panic::catch_unwind(AssertUnwindSafe(f));
     panic::set_hook(hook);
 
-    result.map_err(|panic| {
-        let message = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| panic.downcast_ref::<&str>().copied())
-            .unwrap_or("web-audio-api-rs panicked");
+    result.map_err(panic_message_to_pyerr)
+}
 
-        pyo3::exceptions::PyRuntimeError::new_err(message.to_owned())
-    })
+pub(crate) fn catch_web_audio_panic_reentrant_result<T>(f: impl FnOnce() -> T) -> PyResult<T> {
+    panic::catch_unwind(AssertUnwindSafe(f)).map_err(panic_message_to_pyerr)
 }
 
 pub(crate) fn destination_node_parts(

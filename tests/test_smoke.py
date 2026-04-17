@@ -289,6 +289,24 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertIs(calls[0].target, ctx)
         self.assertIs(calls[0].currentTarget, ctx)
 
+    def test_create_script_processor_exists_on_contexts(self):
+        realtime = web_audio_api.AudioContext({"sinkId": "none"})
+        offline = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+
+        realtime_node = realtime.createScriptProcessor(256, 0, 1)
+        offline_node = offline.createScriptProcessor(256, 0, 1)
+
+        self.assertIsInstance(realtime_node, web_audio_api.ScriptProcessorNode)
+        self.assertIsInstance(offline_node, web_audio_api.ScriptProcessorNode)
+        self.assertEqual(realtime_node.bufferSize, 256)
+        self.assertEqual(offline_node.bufferSize, 256)
+
+    def test_create_script_processor_passes_zero_buffer_size_through(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+
+        with self.assertRaises(RuntimeError):
+            ctx.createScriptProcessor()
+
     def test_offline_oscillator_graph_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         osc = ctx.createOscillator()
@@ -635,6 +653,82 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertTrue(osc.dispatchEvent(web_audio_api.Event("ended")))
         osc.removeEventListener("ended", listener)
         self.assertEqual(calls, ["ended"])
+
+    def test_script_processor_onaudioprocess_property_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 512, 44_100.0)
+        node = ctx.createScriptProcessor(256, 0, 1)
+        marker = object()
+
+        self.assertIsNone(node.onaudioprocess)
+        node.onaudioprocess = marker
+        self.assertIs(node.onaudioprocess, marker)
+        node.onaudioprocess = None
+        self.assertIsNone(node.onaudioprocess)
+
+    def test_script_processor_onaudioprocess_output_only_offline(self):
+        buffer_size = 256
+        ctx = web_audio_api.OfflineAudioContext(1, buffer_size * 3, 8_000.0)
+        node = ctx.createScriptProcessor(buffer_size, 0, 1)
+        events = []
+        kept = {}
+
+        def onaudioprocess(event):
+            kept["event"] = event
+            kept["buffer"] = event.outputBuffer
+            events.append(
+                (
+                    event.type,
+                    event.target is node,
+                    event.currentTarget is node,
+                    event.playbackTime,
+                    event.inputBuffer.numberOfChannels,
+                    event.outputBuffer.numberOfChannels,
+                )
+            )
+            event.outputBuffer.copyToChannel([1.0] * buffer_size, 0)
+
+        node.onaudioprocess = onaudioprocess
+        node.connect(ctx.destination)
+
+        rendered = ctx.startRendering()
+        data = rendered.getChannelData(0)
+
+        self.assertEqual(len(events), 3)
+        self.assertTrue(all(item[:3] == ("audioprocess", True, True) for item in events))
+        self.assertEqual([item[4:] for item in events], [(1, 1), (1, 1), (1, 1)])
+        self.assertEqual(sorted(item[3] for item in events), [item[3] for item in events])
+        self.assertTrue(all(sample == 0.0 for sample in data[: 2 * buffer_size]))
+        self.assertTrue(all(sample == 1.0 for sample in data[2 * buffer_size :]))
+
+        with self.assertRaises(RuntimeError):
+            _ = kept["event"].playbackTime
+        with self.assertRaises(RuntimeError):
+            kept["buffer"].getChannelData(0)
+
+    def test_script_processor_add_event_listener_with_input_processing(self):
+        buffer_size = 256
+        ctx = web_audio_api.OfflineAudioContext(1, buffer_size * 3, 8_000.0)
+        node = ctx.createScriptProcessor(buffer_size, 1, 1)
+        src = ctx.createConstantSource()
+        seen = []
+
+        def listener(event):
+            seen.append((event.type, event.target is node, event.currentTarget is node))
+            data = event.inputBuffer.getChannelData(0)
+            event.outputBuffer.copyToChannel([sample * 2.0 for sample in data], 0)
+
+        node.addEventListener("audioprocess", listener)
+        src.offset.value = 0.25
+        src.connect(node)
+        node.connect(ctx.destination)
+        src.start()
+
+        rendered = ctx.startRendering()
+        data = rendered.getChannelData(0)
+
+        self.assertEqual(seen, [("audioprocess", True, True)] * 3)
+        self.assertTrue(all(sample == 0.0 for sample in data[: 2 * buffer_size]))
+        self.assertTrue(all(sample == 0.5 for sample in data[2 * buffer_size :]))
 
     def test_constant_source_renders_scheduled_samples_offline(self):
         ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)

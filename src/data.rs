@@ -1,40 +1,136 @@
 use super::*;
 
+pub(crate) enum AudioBufferInner {
+    Owned(web_audio_api_rs::AudioBuffer),
+    AudioProcessing {
+        event: Arc<Mutex<Option<web_audio_api_rs::AudioProcessingEvent>>>,
+        which: AudioProcessingBufferKind,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum AudioProcessingBufferKind {
+    Input,
+    Output,
+}
+
 #[pyclass]
-pub(crate) struct AudioBuffer(pub(crate) web_audio_api_rs::AudioBuffer);
+pub(crate) struct AudioBuffer {
+    pub(crate) inner: AudioBufferInner,
+}
+
+impl AudioBuffer {
+    pub(crate) fn owned(buffer: web_audio_api_rs::AudioBuffer) -> Self {
+        Self {
+            inner: AudioBufferInner::Owned(buffer),
+        }
+    }
+
+    pub(crate) fn audio_processing(
+        event: Arc<Mutex<Option<web_audio_api_rs::AudioProcessingEvent>>>,
+        which: AudioProcessingBufferKind,
+    ) -> Self {
+        Self {
+            inner: AudioBufferInner::AudioProcessing { event, which },
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> PyResult<web_audio_api_rs::AudioBuffer> {
+        self.with_buffer(|buffer| Ok(buffer.clone()))
+    }
+
+    fn invalid_audio_processing_buffer_err() -> PyErr {
+        pyo3::exceptions::PyRuntimeError::new_err(
+            "AudioProcessingEvent buffer is no longer available after the callback returns",
+        )
+    }
+
+    fn use_reentrant_panic_catch(&self) -> bool {
+        matches!(self.inner, AudioBufferInner::AudioProcessing { .. })
+    }
+
+    fn with_buffer<T>(
+        &self,
+        f: impl FnOnce(&web_audio_api_rs::AudioBuffer) -> PyResult<T>,
+    ) -> PyResult<T> {
+        match &self.inner {
+            AudioBufferInner::Owned(buffer) => f(buffer),
+            AudioBufferInner::AudioProcessing { event, which } => {
+                let guard = event.lock().unwrap();
+                let processing_event = guard
+                    .as_ref()
+                    .ok_or_else(Self::invalid_audio_processing_buffer_err)?;
+                let buffer = match which {
+                    AudioProcessingBufferKind::Input => &processing_event.input_buffer,
+                    AudioProcessingBufferKind::Output => &processing_event.output_buffer,
+                };
+                f(buffer)
+            }
+        }
+    }
+
+    fn with_buffer_mut<T>(
+        &mut self,
+        f: impl FnOnce(&mut web_audio_api_rs::AudioBuffer) -> PyResult<T>,
+    ) -> PyResult<T> {
+        match &mut self.inner {
+            AudioBufferInner::Owned(buffer) => f(buffer),
+            AudioBufferInner::AudioProcessing { event, which } => {
+                let mut guard = event.lock().unwrap();
+                let processing_event = guard
+                    .as_mut()
+                    .ok_or_else(Self::invalid_audio_processing_buffer_err)?;
+                let buffer = match which {
+                    AudioProcessingBufferKind::Input => &mut processing_event.input_buffer,
+                    AudioProcessingBufferKind::Output => &mut processing_event.output_buffer,
+                };
+                f(buffer)
+            }
+        }
+    }
+}
 
 #[pymethods]
 impl AudioBuffer {
     #[new]
     pub(crate) fn new(options: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Ok(Self(web_audio_api_rs::AudioBuffer::new(
+        Ok(Self::owned(web_audio_api_rs::AudioBuffer::new(
             audio_buffer_options(options)?,
         )))
     }
 
     #[getter(numberOfChannels)]
-    pub(crate) fn number_of_channels(&self) -> usize {
-        self.0.number_of_channels()
+    pub(crate) fn number_of_channels(&self) -> PyResult<usize> {
+        self.with_buffer(|buffer| Ok(buffer.number_of_channels()))
     }
 
     #[getter]
-    pub(crate) fn length(&self) -> usize {
-        self.0.length()
+    pub(crate) fn length(&self) -> PyResult<usize> {
+        self.with_buffer(|buffer| Ok(buffer.length()))
     }
 
     #[getter(sampleRate)]
-    pub(crate) fn sample_rate(&self) -> f32 {
-        self.0.sample_rate()
+    pub(crate) fn sample_rate(&self) -> PyResult<f32> {
+        self.with_buffer(|buffer| Ok(buffer.sample_rate()))
     }
 
     #[getter]
-    pub(crate) fn duration(&self) -> f64 {
-        self.0.duration()
+    pub(crate) fn duration(&self) -> PyResult<f64> {
+        self.with_buffer(|buffer| Ok(buffer.duration()))
     }
 
     #[pyo3(name = "getChannelData")]
     pub(crate) fn get_channel_data(&self, channel_number: usize) -> PyResult<Vec<f32>> {
-        catch_web_audio_panic_result(|| self.0.get_channel_data(channel_number).to_vec())
+        let use_reentrant = self.use_reentrant_panic_catch();
+        self.with_buffer(|buffer| {
+            if use_reentrant {
+                catch_web_audio_panic_reentrant_result(|| {
+                    buffer.get_channel_data(channel_number).to_vec()
+                })
+            } else {
+                catch_web_audio_panic_result(|| buffer.get_channel_data(channel_number).to_vec())
+            }
+        })
     }
 
     #[pyo3(name = "copyFromChannel", signature = (destination, channel_number, buffer_offset=0))]
@@ -44,11 +140,27 @@ impl AudioBuffer {
         channel_number: usize,
         buffer_offset: usize,
     ) -> PyResult<Vec<f32>> {
-        catch_web_audio_panic(|| {
-            self.0
-                .copy_from_channel_with_offset(&mut destination, channel_number, buffer_offset);
-        })?;
-        Ok(destination)
+        let use_reentrant = self.use_reentrant_panic_catch();
+        self.with_buffer(|buffer| {
+            if use_reentrant {
+                catch_web_audio_panic_reentrant_result(|| {
+                    buffer.copy_from_channel_with_offset(
+                        &mut destination,
+                        channel_number,
+                        buffer_offset,
+                    );
+                })?;
+            } else {
+                catch_web_audio_panic(|| {
+                    buffer.copy_from_channel_with_offset(
+                        &mut destination,
+                        channel_number,
+                        buffer_offset,
+                    );
+                })?;
+            }
+            Ok(destination)
+        })
     }
 
     #[pyo3(name = "copyToChannel", signature = (source, channel_number, buffer_offset=0))]
@@ -58,9 +170,17 @@ impl AudioBuffer {
         channel_number: usize,
         buffer_offset: usize,
     ) -> PyResult<()> {
-        catch_web_audio_panic(|| {
-            self.0
-                .copy_to_channel_with_offset(&source, channel_number, buffer_offset);
+        let use_reentrant = self.use_reentrant_panic_catch();
+        self.with_buffer_mut(|buffer| {
+            if use_reentrant {
+                catch_web_audio_panic_reentrant_result(|| {
+                    buffer.copy_to_channel_with_offset(&source, channel_number, buffer_offset);
+                })
+            } else {
+                catch_web_audio_panic(|| {
+                    buffer.copy_to_channel_with_offset(&source, channel_number, buffer_offset);
+                })
+            }
         })
     }
 }

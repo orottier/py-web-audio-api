@@ -30,6 +30,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioContext>()?;
     m.add_class::<OfflineAudioContext>()?;
     m.add_class::<OfflineAudioCompletionEvent>()?;
+    m.add_class::<AudioProcessingEvent>()?;
     m.add_class::<AudioBuffer>()?;
     m.add_class::<PeriodicWave>()?;
     m.add_class::<AudioListener>()?;
@@ -51,6 +52,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<IIRFilterNode>()?;
     m.add_class::<WaveShaperNode>()?;
     m.add_class::<PannerNode>()?;
+    m.add_class::<ScriptProcessorNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -107,8 +109,8 @@ mod tests {
         assert_eq!(offline.sample_rate(), 44_100.);
         assert!(realtime.current_time() >= 0.0);
         assert_eq!(offline.current_time(), 0.0);
-        assert_eq!(realtime.create_buffer(1, 16, 8_000.).length(), 16);
-        assert_eq!(offline.create_buffer(1, 16, 8_000.).length(), 16);
+        assert_eq!(realtime.create_buffer(1, 16, 8_000.).length().unwrap(), 16);
+        assert_eq!(offline.create_buffer(1, 16, 8_000.).length().unwrap(), 16);
 
         let _ = realtime.destination_inner();
         let _ = offline.destination_inner();
