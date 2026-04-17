@@ -5,6 +5,7 @@ pub(crate) static PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default)]
 pub(crate) struct EventTargetRegistry {
+    owner: Option<Py<PyAny>>,
     handlers: HashMap<String, Py<PyAny>>,
     listeners: HashMap<String, Vec<Py<PyAny>>>,
 }
@@ -85,6 +86,10 @@ impl EventTarget {
             .unwrap_or_else(|| py.None())
     }
 
+    pub(crate) fn set_owner(&self, owner: Py<PyAny>) {
+        self.registry.lock().unwrap().owner = Some(owner);
+    }
+
     pub(crate) fn set_event_handler(&self, type_: &str, handler: Option<Py<PyAny>>) {
         let mut registry = self.registry.lock().unwrap();
         if let Some(handler) = handler {
@@ -94,6 +99,10 @@ impl EventTarget {
         }
     }
 
+    pub(crate) fn owner_from_ptr(py: Python<'_>, ptr: *mut pyo3::ffi::PyObject) -> Py<PyAny> {
+        unsafe { Bound::<PyAny>::from_borrowed_ptr(py, ptr) }.unbind()
+    }
+
     pub(crate) fn dispatch_from_registry(
         py: Python<'_>,
         registry: &Arc<Mutex<EventTargetRegistry>>,
@@ -101,21 +110,26 @@ impl EventTarget {
         target: Option<Py<PyAny>>,
         current_target: Option<Py<PyAny>>,
     ) -> PyResult<()> {
-        let (handler, listeners) = {
+        let (owner, handler, listeners) = {
             let registry = registry.lock().unwrap();
+            let owner = registry.owner.as_ref().map(|owner| owner.clone_ref(py));
             let handler = registry.handlers.get(type_).map(|h| h.clone_ref(py));
             let listeners: Vec<Py<PyAny>> = registry
                 .listeners
                 .get(type_)
                 .map(|listeners| listeners.iter().map(|l| l.clone_ref(py)).collect())
                 .unwrap_or_default();
-            (handler, listeners)
+            (owner, handler, listeners)
         };
 
-        let target = target.as_ref().map(|target| target.clone_ref(py));
+        let target = target
+            .as_ref()
+            .map(|target| target.clone_ref(py))
+            .or_else(|| owner.as_ref().map(|owner| owner.clone_ref(py)));
         let current_target = current_target
             .as_ref()
-            .map(|current_target| current_target.clone_ref(py));
+            .map(|current_target| current_target.clone_ref(py))
+            .or_else(|| owner.as_ref().map(|owner| owner.clone_ref(py)));
 
         let event = Py::new(py, Event::new_dispatched(type_, target, current_target))?;
 
@@ -135,7 +149,7 @@ impl EventTarget {
 impl EventTarget {
     #[pyo3(name = "addEventListener")]
     pub(crate) fn add_event_listener(
-        &self,
+        slf: PyRef<'_, Self>,
         py: Python<'_>,
         type_: &str,
         listener: Py<PyAny>,
@@ -146,7 +160,8 @@ impl EventTarget {
             ));
         }
 
-        self.registry
+        slf.set_owner(Self::owner_from_ptr(py, slf.as_ptr()));
+        slf.registry
             .lock()
             .unwrap()
             .listeners
@@ -157,16 +172,27 @@ impl EventTarget {
     }
 
     #[pyo3(name = "removeEventListener")]
-    pub(crate) fn remove_event_listener(&self, py: Python<'_>, type_: &str, listener: Py<PyAny>) {
-        if let Some(listeners) = self.registry.lock().unwrap().listeners.get_mut(type_) {
+    pub(crate) fn remove_event_listener(
+        slf: PyRef<'_, Self>,
+        py: Python<'_>,
+        type_: &str,
+        listener: Py<PyAny>,
+    ) {
+        slf.set_owner(Self::owner_from_ptr(py, slf.as_ptr()));
+        if let Some(listeners) = slf.registry.lock().unwrap().listeners.get_mut(type_) {
             let listener_ptr = listener.bind(py).as_ptr();
             listeners.retain(|existing| existing.bind(py).as_ptr() != listener_ptr);
         }
     }
 
     #[pyo3(name = "dispatchEvent")]
-    pub(crate) fn dispatch_event(&self, py: Python<'_>, event: PyRef<'_, Event>) -> PyResult<bool> {
-        Self::dispatch_from_registry(py, &self.registry, &event.type_, None, None)?;
+    pub(crate) fn dispatch_event(
+        slf: PyRef<'_, Self>,
+        py: Python<'_>,
+        event: PyRef<'_, Event>,
+    ) -> PyResult<bool> {
+        slf.set_owner(Self::owner_from_ptr(py, slf.as_ptr()));
+        Self::dispatch_from_registry(py, &slf.registry, &event.type_, None, None)?;
         Ok(true)
     }
 }

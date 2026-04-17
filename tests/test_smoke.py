@@ -193,8 +193,8 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertGreaterEqual(len(calls), 1)
         self.assertTrue(all(isinstance(event, web_audio_api.Event) for event in calls))
         self.assertTrue(all(event.type == "statechange" for event in calls))
-        self.assertTrue(all(event.target is None for event in calls))
-        self.assertTrue(all(event.currentTarget is None for event in calls))
+        self.assertTrue(all(event.target is ctx for event in calls))
+        self.assertTrue(all(event.currentTarget is ctx for event in calls))
 
     def test_base_audio_context_manual_dispatch_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
@@ -564,8 +564,8 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertIsInstance(calls[0], web_audio_api.Event)
         self.assertEqual(calls[0].type, "ended")
-        self.assertIsNone(calls[0].target)
-        self.assertIsNone(calls[0].currentTarget)
+        self.assertIs(calls[0].target, src)
+        self.assertIs(calls[0].currentTarget, src)
 
     def test_event_target_manual_dispatch_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)

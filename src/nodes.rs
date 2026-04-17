@@ -1456,6 +1456,8 @@ impl AudioScheduledSourceNode {
 
     #[setter]
     pub(crate) fn set_onended(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let owner = EventTarget::owner_from_ptr(slf.py(), slf.as_ptr());
+        slf.as_super().as_super().set_owner(owner);
         let registry = slf.as_super().as_super().registry();
         slf.as_super().as_super().set_event_handler("ended", value);
         slf.inner.clear_onended();

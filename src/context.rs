@@ -174,6 +174,8 @@ impl BaseAudioContext {
 
     #[setter]
     pub(crate) fn set_onstatechange(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let owner = EventTarget::owner_from_ptr(slf.py(), slf.as_ptr());
+        slf.as_super().set_owner(owner);
         let registry = slf.as_super().registry();
         slf.as_super().set_event_handler("statechange", value);
         slf.clear_onstatechange();
