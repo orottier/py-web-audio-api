@@ -56,6 +56,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(offline_ctx.currentTime, 0.0)
         self.assertEqual(audio_ctx.state, "suspended")
         self.assertEqual(offline_ctx.state, "suspended")
+        self.assertEqual(offline_ctx.length, 128)
 
         realtime_buffer = audio_ctx.createBuffer(1, 32, 8_000.0)
         self.assertEqual(realtime_buffer.numberOfChannels, 1)
@@ -171,6 +172,21 @@ class WebAudioApiSmokeTest(unittest.TestCase):
     def test_audio_context_does_not_expose_start_rendering(self):
         ctx = web_audio_api.AudioContext({"sinkId": "none"})
         self.assertFalse(hasattr(ctx, "startRendering"))
+
+    def test_offline_audio_context_dict_constructor_works(self):
+        ctx = web_audio_api.OfflineAudioContext(
+            {"numberOfChannels": 2, "length": 256, "sampleRate": 8_000.0}
+        )
+        default_channels_ctx = web_audio_api.OfflineAudioContext(
+            {"length": 128, "sampleRate": 4_000.0, "renderSizeHint": "default"}
+        )
+
+        self.assertEqual(ctx.sampleRate, 8_000.0)
+        self.assertEqual(ctx.length, 256)
+        self.assertEqual(ctx.destination.maxChannelCount, 2)
+        self.assertEqual(default_channels_ctx.length, 128)
+        self.assertEqual(default_channels_ctx.sampleRate, 4_000.0)
+        self.assertEqual(default_channels_ctx.destination.maxChannelCount, 1)
 
     def test_base_audio_context_onstatechange_property_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)

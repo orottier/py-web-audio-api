@@ -229,6 +229,36 @@ pub(crate) fn audio_context_options(
     Ok(parsed)
 }
 
+fn offline_audio_context_options_from_dict(
+    options: &Bound<'_, PyDict>,
+) -> PyResult<(usize, usize, f32)> {
+    let number_of_channels = options
+        .get_item("numberOfChannels")?
+        .map(|value| value.extract())
+        .transpose()?
+        .unwrap_or(1);
+    let length = options
+        .get_item("length")?
+        .ok_or_else(|| {
+            pyo3::exceptions::PyTypeError::new_err("OfflineAudioContextOptions.length is required")
+        })?
+        .extract()?;
+    let sample_rate = options
+        .get_item("sampleRate")?
+        .ok_or_else(|| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "OfflineAudioContextOptions.sampleRate is required",
+            )
+        })?
+        .extract()?;
+
+    if let Some(render_size_hint) = options.get_item("renderSizeHint")? {
+        audio_context_render_size_category_from_str(render_size_hint.extract::<&str>()?)?;
+    }
+
+    Ok((number_of_channels, length, sample_rate))
+}
+
 impl AudioContext {
     pub(crate) fn clear_onsinkchange(&self) {
         self.0.lock().unwrap().clear_onsinkchange();
@@ -794,11 +824,30 @@ impl OfflineAudioContext {
     }
 
     #[new]
+    #[pyo3(signature = (number_of_channels_or_options, length=None, sample_rate=None))]
     pub(crate) fn new(
-        number_of_channels: usize,
-        length: usize,
-        sample_rate: f32,
-    ) -> PyClassInitializer<Self> {
+        number_of_channels_or_options: &Bound<'_, PyAny>,
+        length: Option<usize>,
+        sample_rate: Option<f32>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let (number_of_channels, length, sample_rate) = if let Ok(options) =
+            number_of_channels_or_options.cast::<PyDict>()
+        {
+            offline_audio_context_options_from_dict(options)?
+        } else {
+            (
+                number_of_channels_or_options.extract::<usize>()?,
+                length.ok_or_else(|| {
+                    pyo3::exceptions::PyTypeError::new_err("OfflineAudioContext.length is required")
+                })?,
+                sample_rate.ok_or_else(|| {
+                    pyo3::exceptions::PyTypeError::new_err(
+                        "OfflineAudioContext.sampleRate is required",
+                    )
+                })?,
+            )
+        };
+
         let ctx = Arc::new(Mutex::new(
             web_audio_api_rs::context::OfflineAudioContext::new(
                 number_of_channels,
@@ -806,11 +855,16 @@ impl OfflineAudioContext {
                 sample_rate,
             ),
         ));
-        PyClassInitializer::from(EventTarget::new())
+        Ok(PyClassInitializer::from(EventTarget::new())
             .add_subclass(BaseAudioContext::new(BaseAudioContextInner::Offline(
                 Arc::clone(&ctx),
             )))
-            .add_subclass(Self(ctx))
+            .add_subclass(Self(ctx)))
+    }
+
+    #[getter]
+    pub(crate) fn length(&self) -> usize {
+        self.0.lock().unwrap().length()
     }
 
     #[pyo3(name = "startRendering")]
