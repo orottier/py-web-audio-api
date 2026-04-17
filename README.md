@@ -23,6 +23,23 @@ osc.connect(ctx.destination)
 osc.start()
 ```
 
+## Examples
+
+Runnable example scripts live in [examples](/Users/robotto/Projects/py-web-audio-api/examples):
+
+- [examples/osc_gain.py](/Users/robotto/Projects/py-web-audio-api/examples/osc_gain.py): simple oscillator through a gain node
+- [examples/worklet_white_noise.py](/Users/robotto/Projects/py-web-audio-api/examples/worklet_white_noise.py): `AudioWorklet` white noise with message-based volume changes
+- [examples/analyser_meter.py](/Users/robotto/Projects/py-web-audio-api/examples/analyser_meter.py): analyser-based terminal level meter
+- [examples/buffer_source.py](/Users/robotto/Projects/py-web-audio-api/examples/buffer_source.py): build and play a short buffer
+- [examples/mic_input.py](/Users/robotto/Projects/py-web-audio-api/examples/mic_input.py): microphone input into a graph
+- [examples/recorder.py](/Users/robotto/Projects/py-web-audio-api/examples/recorder.py): record graph output to a WAV file
+
+Run an example after `maturin develop`:
+
+```bash
+.venv/bin/python examples/osc_gain.py
+```
+
 ## Advanced usage
 
 The binding now exposes asyncio-native awaitables for the Web Audio methods that are async in
@@ -130,6 +147,8 @@ osc.connect(ctx.destination)
 osc.start()
 osc.frequency.value = 300
 ```
+
+The scripts in [examples](/Users/robotto/Projects/py-web-audio-api/examples) are a good next step after this quick smoke test.
 
 ## Build
 

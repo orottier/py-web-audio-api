@@ -14,6 +14,8 @@
 - When testing wrapper types in Rust, exercise the wrapper's binding-shaped API, not the underlying raw Rust API with wrapper signatures mixed in. If the goal is to test raw crate behavior, test the raw crate object directly instead.
 - Keep direct constructors and `createX()` factories aligned where the IDL exposes both.
 - Prefer explicit `NotImplementedError` stubs to misleading partial behavior when a spec feature depends on unmodeled async/event/media/worklet infrastructure.
+- Put user-runnable sample programs in `examples/`, keep them small and dependency-light, and prefer showcasing one feature clearly per script.
+- When adding or changing examples, make sure README points to them and that the examples match the current public Python API instead of test-only helpers.
 - For async Python tests, create awaitables inside a running event loop, typically via `asyncio.run(...)` around a small coroutine helper.
 - For realtime tests, use `AudioContext({"sinkId": "none"})` so CI and local headless runs stay deterministic.
 - Before finishing, run:
