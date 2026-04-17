@@ -167,6 +167,39 @@ pub(crate) fn audio_context_render_size_category_from_str(
     }
 }
 
+pub(crate) fn audio_context_state_to_str(
+    value: web_audio_api_rs::context::AudioContextState,
+) -> &'static str {
+    match value {
+        web_audio_api_rs::context::AudioContextState::Suspended => "suspended",
+        web_audio_api_rs::context::AudioContextState::Running => "running",
+        web_audio_api_rs::context::AudioContextState::Closed => "closed",
+    }
+}
+
+fn audio_sink_id_from_value(value: &Bound<'_, PyAny>) -> PyResult<String> {
+    if let Ok(sink_id) = value.extract::<String>() {
+        return Ok(sink_id);
+    }
+
+    let sink_options = value.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err(
+            "AudioContextOptions.sinkId must be a string or AudioSinkOptions dict",
+        )
+    })?;
+
+    match sink_options
+        .get_item("type")?
+        .ok_or_else(|| pyo3::exceptions::PyTypeError::new_err("AudioSinkOptions.type is required"))?
+        .extract::<&str>()?
+    {
+        "none" => Ok("none".to_owned()),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "AudioSinkOptions.type must be 'none'",
+        )),
+    }
+}
+
 pub(crate) fn audio_context_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::context::AudioContextOptions> {
@@ -186,7 +219,7 @@ pub(crate) fn audio_context_options(
         parsed.sample_rate = Some(sample_rate.extract()?);
     }
     if let Some(sink_id) = options.get_item("sinkId")? {
-        parsed.sink_id = sink_id.extract()?;
+        parsed.sink_id = audio_sink_id_from_value(&sink_id)?;
     }
     if let Some(render_size_hint) = options.get_item("renderSizeHint")? {
         parsed.render_size_hint =
@@ -260,6 +293,21 @@ impl BaseAudioContext {
             BaseAudioContextInner::Realtime(ctx) => ctx.lock().unwrap().current_time(),
             BaseAudioContextInner::Offline(ctx) => ctx.lock().unwrap().current_time(),
             BaseAudioContextInner::Concrete(ctx) => ctx.current_time(),
+        }
+    }
+
+    #[getter]
+    pub(crate) fn state(&self) -> String {
+        match &self.inner {
+            BaseAudioContextInner::Realtime(ctx) => {
+                audio_context_state_to_str(ctx.lock().unwrap().state()).to_owned()
+            }
+            BaseAudioContextInner::Offline(ctx) => {
+                audio_context_state_to_str(ctx.lock().unwrap().state()).to_owned()
+            }
+            BaseAudioContextInner::Concrete(ctx) => {
+                audio_context_state_to_str(ctx.state()).to_owned()
+            }
         }
     }
 

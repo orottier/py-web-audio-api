@@ -54,6 +54,8 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(offline_ctx.sampleRate, 44_100.0)
         self.assertGreaterEqual(audio_ctx.currentTime, 0.0)
         self.assertEqual(offline_ctx.currentTime, 0.0)
+        self.assertEqual(audio_ctx.state, "suspended")
+        self.assertEqual(offline_ctx.state, "suspended")
 
         realtime_buffer = audio_ctx.createBuffer(1, 32, 8_000.0)
         self.assertEqual(realtime_buffer.numberOfChannels, 1)
@@ -195,6 +197,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertTrue(all(event.type == "statechange" for event in calls))
         self.assertTrue(all(event.target is ctx for event in calls))
         self.assertTrue(all(event.currentTarget is ctx for event in calls))
+        self.assertEqual(ctx.state, "closed")
 
     def test_offline_audio_context_oncomplete_property_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
