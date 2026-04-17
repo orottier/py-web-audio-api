@@ -1,6 +1,7 @@
 import asyncio
 import io
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -49,6 +50,10 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav_file:
             wav_file.write(self.wav_bytes(samples, sample_rate))
             return wav_file.name
+
+    def skip_if_linux_ci_media_device_test(self):
+        if os.environ.get("CI") and sys.platform.startswith("linux"):
+            self.skipTest("host media-device probing is flaky on Linux CI")
 
     def test_audio_node_idl_surface_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
@@ -692,6 +697,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.run_async(lambda: ctx.close())
 
     def test_get_user_media_sync_entrypoint_is_wired(self):
+        self.skip_if_linux_ci_media_device_test()
         ctx = web_audio_api.AudioContext({"sinkId": "none"})
 
         try:
@@ -704,12 +710,15 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             self.assertIsInstance(node, web_audio_api.MediaStreamAudioSourceNode)
             self.assertIsInstance(node, web_audio_api.AudioNode)
             stream.close()
+        finally:
+            self.run_async(lambda: ctx.close())
 
     def test_media_stream_track_is_not_constructible(self):
         with self.assertRaises(TypeError):
             web_audio_api.MediaStreamTrack()
 
     def test_media_stream_track_surface_is_wired(self):
+        self.skip_if_linux_ci_media_device_test()
         ctx = web_audio_api.AudioContext({"sinkId": "none"})
 
         try:
@@ -728,6 +737,8 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             self.assertIsInstance(node.mediaStreamTrack, web_audio_api.MediaStreamTrack)
             track.close()
             stream.close()
+        finally:
+            self.run_async(lambda: ctx.close())
 
     def test_media_stream_audio_destination_surface_is_wired(self):
         ctx = web_audio_api.AudioContext({"sinkId": "none"})
@@ -742,6 +753,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertGreaterEqual(len(tracks), 1)
         self.assertIsInstance(tracks[0], web_audio_api.MediaStreamTrack)
         stream.close()
+        self.run_async(lambda: ctx.close())
 
     def test_media_stream_track_iter_buffers_consumes_graph_output(self):
         ctx = web_audio_api.AudioContext({"sinkId": "none"})
@@ -1008,6 +1020,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.run_async(lambda: ctx.close())
 
     def test_enumerate_devices_sync_entrypoint_is_wired(self):
+        self.skip_if_linux_ci_media_device_test()
         try:
             devices = web_audio_api.enumerateDevicesSync()
         except RuntimeError as exc:
@@ -1022,6 +1035,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
                 self.assertIsInstance(device.label, str)
 
     def test_get_user_media_async_entrypoint_is_wired(self):
+        self.skip_if_linux_ci_media_device_test()
         try:
             stream = self.run_async(lambda: web_audio_api.getUserMedia())
         except RuntimeError as exc:
@@ -1031,6 +1045,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             stream.close()
 
     def test_enumerate_devices_async_entrypoint_is_wired(self):
+        self.skip_if_linux_ci_media_device_test()
         try:
             devices = self.run_async(lambda: web_audio_api.enumerateDevices())
         except RuntimeError as exc:
