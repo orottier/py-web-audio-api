@@ -358,6 +358,11 @@ impl BaseAudioContext {
         self.listener_inner()
     }
 
+    #[getter(audioWorklet)]
+    pub(crate) fn audio_worklet(&self, py: Python<'_>) -> PyResult<Py<AudioWorklet>> {
+        AudioWorklet::new_py(py)
+    }
+
     #[getter(sampleRate)]
     pub(crate) fn sample_rate(&self) -> f32 {
         match &self.inner {

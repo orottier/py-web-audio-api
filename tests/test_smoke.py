@@ -9,6 +9,8 @@ import web_audio_api
 
 
 class WebAudioApiSmokeTest(unittest.TestCase):
+    _worklet_counter = 0
+
     @staticmethod
     def run_async(awaitable_factory):
         async def runner():
@@ -35,6 +37,11 @@ class WebAudioApiSmokeTest(unittest.TestCase):
                 )
             )
         return buffer.getvalue()
+
+    @classmethod
+    def unique_worklet_name(cls, prefix="processor"):
+        cls._worklet_counter += 1
+        return f"{prefix}_{cls._worklet_counter}"
 
     def test_audio_node_idl_surface_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
@@ -365,6 +372,214 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertIsInstance(offline_node, web_audio_api.ScriptProcessorNode)
         self.assertEqual(realtime_node.bufferSize, 256)
         self.assertEqual(offline_node.bufferSize, 256)
+
+    def test_audio_worklet_registration_validates_shape(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
+
+        class MissingName(web_audio_api.AudioWorkletProcessor):
+            def process(self, inputs, outputs, parameters):
+                return True
+
+        class ValidProcessor(web_audio_api.AudioWorkletProcessor):
+            name = self.unique_worklet_name("valid")
+
+            def process(self, inputs, outputs, parameters):
+                return True
+
+        with self.assertRaises(TypeError):
+            ctx.audioWorklet.addModule(MissingName)
+
+        ctx.audioWorklet.addModule(ValidProcessor)
+        with self.assertRaises(ValueError):
+            ctx.audioWorklet.addModule(ValidProcessor)
+
+    def test_audio_worklet_passthrough_and_parameter_map_work(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
+        processor_name = self.unique_worklet_name("passthrough")
+
+        class PassthroughProcessor(web_audio_api.AudioWorkletProcessor):
+            name = processor_name
+
+            @staticmethod
+            def parameterDescriptors():
+                return [
+                    {
+                        "name": "gain",
+                        "defaultValue": 0.5,
+                        "minValue": 0.0,
+                        "maxValue": 2.0,
+                        "automationRate": "a-rate",
+                    }
+                ]
+
+            def process(self, inputs, outputs, parameters):
+                gain = parameters["gain"][0]
+                for channel_index, channel in enumerate(outputs[0]):
+                    source = inputs[0][channel_index]
+                    for i, sample in enumerate(source):
+                        channel[i] = sample * gain
+                return True
+
+        ctx.audioWorklet.addModule(PassthroughProcessor)
+
+        src = ctx.createConstantSource()
+        src.offset.value = 0.5
+        node = web_audio_api.AudioWorkletNode(
+            ctx,
+            processor_name,
+            {"parameterData": {"gain": 0.25}},
+        )
+
+        self.assertEqual(sorted(node.parameters.keys()), ["gain"])
+        self.assertEqual(len(node.parameters), 1)
+        self.assertAlmostEqual(node.parameters["gain"].value, 0.25, places=6)
+
+        src.connect(node)
+        node.connect(ctx.destination)
+        src.start()
+        rendered = self.run_async(lambda: ctx.startRendering())
+        samples = rendered.getChannelData(0)
+
+        self.assertTrue(all(abs(sample - 0.125) < 1e-4 for sample in samples[:32]))
+
+    def test_audio_worklet_source_processor_can_render_without_inputs(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 256, 8_000.0)
+        processor_name = self.unique_worklet_name("source")
+
+        class SourceProcessor(web_audio_api.AudioWorkletProcessor):
+            name = processor_name
+
+            def process(self, inputs, outputs, parameters):
+                for channel in outputs[0]:
+                    for i in range(len(channel)):
+                        channel[i] = 1.0
+                return False
+
+        ctx.audioWorklet.addModule(SourceProcessor)
+        node = web_audio_api.AudioWorkletNode(
+            ctx,
+            processor_name,
+            {"numberOfInputs": 0, "numberOfOutputs": 1, "outputChannelCount": [1]},
+        )
+        node.connect(ctx.destination)
+
+        rendered = self.run_async(lambda: ctx.startRendering())
+        samples = rendered.getChannelData(0)
+
+        self.assertTrue(all(abs(sample - 1.0) < 1e-6 for sample in samples))
+
+    def test_audio_worklet_processor_and_control_plane_share_globals(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
+        processor_name = self.unique_worklet_name("globals")
+        shared = {"constructed": 0, "processed": 0}
+
+        class SharedStateProcessor(web_audio_api.AudioWorkletProcessor):
+            name = processor_name
+
+            def __init__(self, options=None):
+                shared["constructed"] += 1
+
+            def process(self, inputs, outputs, parameters):
+                shared["processed"] += 1
+                return False
+
+        ctx.audioWorklet.addModule(SharedStateProcessor)
+        node = web_audio_api.AudioWorkletNode(
+            ctx,
+            processor_name,
+            {"numberOfInputs": 0, "numberOfOutputs": 1, "outputChannelCount": [1]},
+        )
+        node.connect(ctx.destination)
+
+        self.run_async(lambda: ctx.startRendering())
+
+        self.assertEqual(shared["constructed"], 1)
+        self.assertGreaterEqual(shared["processed"], 1)
+
+    def test_audio_worklet_message_ports_round_trip(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
+        processor_name = self.unique_worklet_name("messages")
+        received = []
+
+        class MessageProcessor(web_audio_api.AudioWorkletProcessor):
+            name = processor_name
+
+            def __init__(self, options=None):
+                self.multiplier = 1.0
+
+            def onmessage(self, value):
+                self.multiplier = float(value["multiplier"])
+
+            def process(self, inputs, outputs, parameters):
+                for channel in outputs[0]:
+                    for i in range(len(channel)):
+                        channel[i] = self.multiplier
+                self.port.postMessage({"seen": self.multiplier})
+                return False
+
+        ctx.audioWorklet.addModule(MessageProcessor)
+        node = web_audio_api.AudioWorkletNode(
+            ctx,
+            processor_name,
+            {"numberOfInputs": 0, "numberOfOutputs": 1, "outputChannelCount": [1]},
+        )
+        node.port.onmessage = lambda event: received.append(event.data)
+        node.port.postMessage({"multiplier": 0.75})
+        node.connect(ctx.destination)
+
+        rendered = self.run_async(lambda: ctx.startRendering())
+        samples = rendered.getChannelData(0)
+
+        self.assertTrue(all(abs(sample - 0.75) < 1e-6 for sample in samples[:128]))
+        self.assertGreaterEqual(len(received), 1)
+        self.assertEqual(received[0]["seen"], 0.75)
+
+    def test_audio_worklet_invalid_message_payload_raises(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
+        processor_name = self.unique_worklet_name("payload")
+
+        class PayloadProcessor(web_audio_api.AudioWorkletProcessor):
+            name = processor_name
+
+            def process(self, inputs, outputs, parameters):
+                return False
+
+        ctx.audioWorklet.addModule(PayloadProcessor)
+        node = web_audio_api.AudioWorkletNode(
+            ctx,
+            processor_name,
+            {"numberOfInputs": 0, "numberOfOutputs": 1, "outputChannelCount": [1]},
+        )
+
+        with self.assertRaises(TypeError):
+            node.port.postMessage(object())
+
+    def test_audio_worklet_process_error_fires_onprocessorerror_and_silences_output(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
+        processor_name = self.unique_worklet_name("boom")
+        errors = []
+
+        class FailingProcessor(web_audio_api.AudioWorkletProcessor):
+            name = processor_name
+
+            def process(self, inputs, outputs, parameters):
+                raise RuntimeError("boom")
+
+        ctx.audioWorklet.addModule(FailingProcessor)
+        node = web_audio_api.AudioWorkletNode(
+            ctx,
+            processor_name,
+            {"numberOfInputs": 0, "numberOfOutputs": 1, "outputChannelCount": [1]},
+        )
+        node.onprocessorerror = lambda event: errors.append(event.message)
+        node.connect(ctx.destination)
+
+        rendered = self.run_async(lambda: ctx.startRendering())
+        samples = rendered.getChannelData(0)
+
+        self.assertGreaterEqual(len(errors), 1)
+        self.assertIn("boom", errors[0])
+        self.assertTrue(all(abs(sample) < 1e-6 for sample in samples))
 
     def test_media_stream_is_not_constructible(self):
         with self.assertRaises(TypeError):

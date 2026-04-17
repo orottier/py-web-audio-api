@@ -5,9 +5,9 @@ pub(crate) static PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default)]
 pub(crate) struct EventTargetRegistry {
-    owner: Option<Py<PyAny>>,
-    handlers: HashMap<String, Py<PyAny>>,
-    listeners: HashMap<String, Vec<Py<PyAny>>>,
+    pub(crate) owner: Option<Py<PyAny>>,
+    pub(crate) handlers: HashMap<String, Py<PyAny>>,
+    pub(crate) listeners: HashMap<String, Vec<Py<PyAny>>>,
 }
 
 #[pyclass(subclass)]

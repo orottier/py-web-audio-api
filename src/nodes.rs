@@ -66,6 +66,55 @@ pub(crate) fn update_audio_node_options(
     Ok(())
 }
 
+pub(crate) fn audio_worklet_node_options(
+    name: &str,
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<(
+    Vec<web_audio_api_rs::AudioParamDescriptor>,
+    web_audio_api_rs::worklet::AudioWorkletNodeOptions<PythonWorkletBridgeOptions>,
+)> {
+    let descriptors = registered_worklet_descriptors(name)?;
+    let mut parsed =
+        web_audio_api_rs::worklet::AudioWorkletNodeOptions::<PythonWorkletBridgeOptions>::default();
+    parsed.processor_options = PythonWorkletBridgeOptions {
+        bridge_id: next_worklet_bridge_id(),
+        registration_name: name.to_owned(),
+        processor_options: BasicMessageValue::None,
+        node_port: new_worklet_node_port_shared(),
+    };
+
+    if let Some(options) = options_dict(options, "AudioWorkletNodeOptions")? {
+        update_audio_node_options(options, &mut parsed.audio_node_options)?;
+        if let Some(number_of_inputs) = options.get_item("numberOfInputs")? {
+            parsed.number_of_inputs = number_of_inputs.extract()?;
+        }
+        if let Some(number_of_outputs) = options.get_item("numberOfOutputs")? {
+            parsed.number_of_outputs = number_of_outputs.extract()?;
+        }
+        if let Some(output_channel_count) = options.get_item("outputChannelCount")? {
+            parsed.output_channel_count = output_channel_count.extract()?;
+        }
+        if let Some(parameter_data) = options.get_item("parameterData")? {
+            let parameter_data = parameter_data.cast::<PyDict>().map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err(
+                    "AudioWorkletNodeOptions.parameterData must be a dict",
+                )
+            })?;
+            for (key, value) in parameter_data.iter() {
+                parsed
+                    .parameter_data
+                    .insert(key.extract::<String>()?, value.extract::<f64>()?);
+            }
+        }
+        if let Some(processor_options) = options.get_item("processorOptions")? {
+            parsed.processor_options.processor_options =
+                py_to_basic_message_value(&processor_options)?;
+        }
+    }
+
+    Ok((descriptors, parsed))
+}
+
 pub(crate) enum ScheduledSourceInner {
     AudioBufferSource(Arc<Mutex<web_audio_api_rs::node::AudioBufferSourceNode>>),
     Oscillator(Arc<Mutex<web_audio_api_rs::node::OscillatorNode>>),
@@ -753,6 +802,43 @@ pub(crate) fn script_processor_node_py(
     )
 }
 
+pub(crate) fn audio_worklet_node_py(
+    py: Python<'_>,
+    ctx: &impl RsBaseAudioContext,
+    descriptors: Vec<web_audio_api_rs::AudioParamDescriptor>,
+    options: web_audio_api_rs::worklet::AudioWorkletNodeOptions<PythonWorkletBridgeOptions>,
+) -> PyResult<Py<AudioWorkletNode>> {
+    let node_port_shared = options.processor_options.node_port.clone();
+    let node_port = MessagePort::new_py(py, Arc::clone(&node_port_shared))?;
+    let node = catch_web_audio_panic_result(|| {
+        with_worklet_descriptors(descriptors, || {
+            web_audio_api_rs::worklet::AudioWorkletNode::new::<PythonWorkletBridgeProcessor>(
+                ctx, options,
+            )
+        })
+    })?;
+    let params = AudioParamMap {
+        params: node
+            .parameters()
+            .iter()
+            .map(|(name, param)| (name.clone(), AudioParam(param.clone())))
+            .collect(),
+    };
+    let inner = Arc::new(Mutex::new(node));
+    set_worklet_node_port_node(&node_port_shared, Arc::clone(&inner));
+    let base = AudioNode(inner.clone());
+    Py::new(
+        py,
+        PyClassInitializer::from(EventTarget::new())
+            .add_subclass(base)
+            .add_subclass(AudioWorkletNode {
+                inner,
+                parameters: params,
+                port: node_port,
+            }),
+    )
+}
+
 #[cfg(test)]
 pub(crate) fn oscillator_node_parts(
     ctx: &impl RsBaseAudioContext,
@@ -1397,7 +1483,8 @@ pub(crate) fn oscillator_type_from_str(
     }
 }
 
-#[pyclass]
+#[pyclass(skip_from_py_object)]
+#[derive(Clone)]
 pub(crate) struct AudioParam(pub(crate) web_audio_api_rs::AudioParam);
 
 #[pymethods]
@@ -1807,6 +1894,13 @@ pub(crate) struct ScriptProcessorNode(
     pub(crate) Arc<Mutex<web_audio_api_rs::node::ScriptProcessorNode>>,
 );
 
+#[pyclass(extends = AudioNode)]
+pub(crate) struct AudioWorkletNode {
+    pub(crate) inner: Arc<Mutex<web_audio_api_rs::worklet::AudioWorkletNode>>,
+    parameters: AudioParamMap,
+    port: Py<MessagePort>,
+}
+
 impl ScriptProcessorNode {
     pub(crate) fn clear_onaudioprocess(&self) {
         self.0.lock().unwrap().clear_onaudioprocess();
@@ -1915,6 +2009,75 @@ impl ScriptProcessorNode {
     #[getter(bufferSize)]
     pub(crate) fn buffer_size(&self) -> usize {
         self.0.lock().unwrap().buffer_size()
+    }
+}
+
+#[pymethods]
+impl AudioWorkletNode {
+    #[new]
+    #[pyo3(signature = (ctx, name, options=None))]
+    pub(crate) fn new(
+        py: Python<'_>,
+        ctx: &Bound<'_, PyAny>,
+        name: &str,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<Self>> {
+        let (descriptors, options) = audio_worklet_node_options(name, options)?;
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
+            return audio_worklet_node_py(py, ctx.0.as_ref(), descriptors, options);
+        }
+        if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
+            return audio_worklet_node_py(py, ctx.0.as_ref(), descriptors, options);
+        }
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected AudioContext or OfflineAudioContext",
+        ))
+    }
+
+    #[getter]
+    pub(crate) fn parameters(&self) -> AudioParamMap {
+        self.parameters.clone()
+    }
+
+    #[getter]
+    pub(crate) fn port(&self, py: Python<'_>) -> Py<MessagePort> {
+        self.port.clone_ref(py)
+    }
+
+    #[getter]
+    pub(crate) fn onprocessorerror(slf: PyRef<'_, Self>, py: Python<'_>) -> Py<PyAny> {
+        slf.as_super()
+            .as_super()
+            .event_handler(py, "processorerror")
+    }
+
+    #[setter]
+    pub(crate) fn set_onprocessorerror(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let owner = EventTarget::owner_from_ptr(slf.py(), slf.as_ptr());
+        slf.as_super().as_super().set_owner(owner);
+        let registry = slf.as_super().as_super().registry();
+        slf.as_super()
+            .as_super()
+            .set_event_handler("processorerror", value);
+        slf.inner.lock().unwrap().clear_onprocessorerror();
+        slf.inner
+            .lock()
+            .unwrap()
+            .set_onprocessorerror(Box::new(move |event| {
+                Python::attach(|py| match error_event_py(py, &registry, event.message) {
+                    Ok(event) => {
+                        if let Err(err) = EventTarget::dispatch_event_object(
+                            py,
+                            &registry,
+                            "processorerror",
+                            event,
+                        ) {
+                            err.print(py);
+                        }
+                    }
+                    Err(err) => err.print(py),
+                });
+            }));
     }
 }
 

@@ -93,9 +93,14 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<OfflineAudioCompletionEvent>()?;
     m.add_class::<AudioProcessingEvent>()?;
     m.add_class::<AudioBuffer>()?;
+    m.add_class::<MessageEvent>()?;
+    m.add_class::<MessagePort>()?;
     m.add_class::<Blob>()?;
     m.add_class::<BlobEvent>()?;
     m.add_class::<ErrorEvent>()?;
+    m.add_class::<AudioParamMap>()?;
+    m.add_class::<AudioWorklet>()?;
+    m.add_class::<AudioWorkletProcessor>()?;
     m.add_class::<MediaDeviceInfo>()?;
     m.add_class::<MediaRecorder>()?;
     m.add_class::<MediaStream>()?;
@@ -121,6 +126,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<WaveShaperNode>()?;
     m.add_class::<PannerNode>()?;
     m.add_class::<ScriptProcessorNode>()?;
+    m.add_class::<AudioWorkletNode>()?;
     m.add_class::<MediaStreamAudioSourceNode>()?;
     m.add_class::<MediaStreamTrackAudioSourceNode>()?;
     m.add_class::<MediaStreamAudioDestinationNode>()?;

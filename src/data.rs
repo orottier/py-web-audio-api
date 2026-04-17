@@ -1,5 +1,14 @@
 use super::*;
+use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::types::{PyList, PyModule, PyTuple, PyType};
+use pyo3::IntoPyObjectExt;
+use std::any::Any;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::OnceLock;
+use std::thread;
 
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
@@ -113,7 +122,7 @@ fn blob_event_py(
     Ok(event.into_any())
 }
 
-fn error_event_py(
+pub(crate) fn error_event_py(
     py: Python<'_>,
     registry: &Arc<Mutex<EventTargetRegistry>>,
     message: String,
@@ -205,6 +214,937 @@ impl MediaRecorder {
             );
         });
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum BasicMessageValue {
+    None,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+    Bytes(Vec<u8>),
+    List(Vec<BasicMessageValue>),
+    Tuple(Vec<BasicMessageValue>),
+    Dict(Vec<(String, BasicMessageValue)>),
+}
+
+pub(crate) fn py_to_basic_message_value(value: &Bound<'_, PyAny>) -> PyResult<BasicMessageValue> {
+    if value.is_none() {
+        return Ok(BasicMessageValue::None);
+    }
+    if let Ok(value) = value.extract::<bool>() {
+        return Ok(BasicMessageValue::Bool(value));
+    }
+    if let Ok(value) = value.extract::<i64>() {
+        return Ok(BasicMessageValue::Int(value));
+    }
+    if let Ok(value) = value.extract::<f64>() {
+        return Ok(BasicMessageValue::Float(value));
+    }
+    if let Ok(value) = value.extract::<String>() {
+        return Ok(BasicMessageValue::String(value));
+    }
+    if let Ok(value) = value.extract::<Vec<u8>>() {
+        return Ok(BasicMessageValue::Bytes(value));
+    }
+    if let Ok(tuple) = value.cast::<PyTuple>() {
+        return Ok(BasicMessageValue::Tuple(
+            tuple
+                .iter()
+                .map(|item| py_to_basic_message_value(&item))
+                .collect::<PyResult<Vec<_>>>()?,
+        ));
+    }
+    if let Ok(list) = value.cast::<PyList>() {
+        return Ok(BasicMessageValue::List(
+            list.iter()
+                .map(|item| py_to_basic_message_value(&item))
+                .collect::<PyResult<Vec<_>>>()?,
+        ));
+    }
+    if let Ok(dict) = value.cast::<PyDict>() {
+        let mut items = Vec::with_capacity(dict.len());
+        for (key, value) in dict.iter() {
+            items.push((key.extract::<String>()?, py_to_basic_message_value(&value)?));
+        }
+        return Ok(BasicMessageValue::Dict(items));
+    }
+
+    Err(PyTypeError::new_err(
+        "worklet messages and processorOptions must be composed of None, bool, int, float, str, bytes, lists, tuples, and dicts with string keys",
+    ))
+}
+
+fn basic_message_value_to_py(py: Python<'_>, value: &BasicMessageValue) -> PyResult<Py<PyAny>> {
+    Ok(match value {
+        BasicMessageValue::None => py.None(),
+        BasicMessageValue::Bool(value) => value.into_py_any(py)?,
+        BasicMessageValue::Int(value) => value.into_py_any(py)?,
+        BasicMessageValue::Float(value) => value.into_py_any(py)?,
+        BasicMessageValue::String(value) => value.clone().into_py_any(py)?,
+        BasicMessageValue::Bytes(value) => value.clone().into_py_any(py)?,
+        BasicMessageValue::List(values) => {
+            let items = values
+                .iter()
+                .map(|value| basic_message_value_to_py(py, value))
+                .collect::<PyResult<Vec<_>>>()?;
+            PyList::new(py, items)?.unbind().into_any()
+        }
+        BasicMessageValue::Tuple(values) => {
+            let items = values
+                .iter()
+                .map(|value| basic_message_value_to_py(py, value))
+                .collect::<PyResult<Vec<_>>>()?;
+            PyTuple::new(py, items)?.unbind().into_any()
+        }
+        BasicMessageValue::Dict(values) => {
+            let dict = PyDict::new(py);
+            for (key, value) in values {
+                dict.set_item(key, basic_message_value_to_py(py, value)?)?;
+            }
+            dict.unbind().into_any()
+        }
+    })
+}
+
+#[pyclass(extends = Event)]
+pub(crate) struct MessageEvent {
+    data: BasicMessageValue,
+}
+
+#[pymethods]
+impl MessageEvent {
+    #[getter]
+    pub(crate) fn data(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        basic_message_value_to_py(py, &self.data)
+    }
+}
+
+#[derive(Clone)]
+enum MessagePortEndpoint {
+    AudioWorkletGlobal,
+    Node {
+        node: Arc<Mutex<Option<Arc<Mutex<web_audio_api_rs::worklet::AudioWorkletNode>>>>>,
+    },
+    Processor {
+        bridge_id: u64,
+    },
+}
+
+pub(crate) struct MessagePortShared {
+    registry: Arc<Mutex<EventTargetRegistry>>,
+    endpoint: MessagePortEndpoint,
+}
+
+impl MessagePortShared {
+    fn new(endpoint: MessagePortEndpoint) -> Arc<Self> {
+        Arc::new(Self {
+            registry: Arc::new(Mutex::new(EventTargetRegistry::default())),
+            endpoint,
+        })
+    }
+}
+
+pub(crate) fn new_worklet_node_port_shared() -> Arc<MessagePortShared> {
+    MessagePortShared::new(MessagePortEndpoint::Node {
+        node: Arc::new(Mutex::new(None)),
+    })
+}
+
+pub(crate) fn set_worklet_node_port_node(
+    shared: &Arc<MessagePortShared>,
+    node: Arc<Mutex<web_audio_api_rs::worklet::AudioWorkletNode>>,
+) {
+    if let MessagePortEndpoint::Node { node: slot } = &shared.endpoint {
+        *slot.lock().unwrap() = Some(node);
+    }
+}
+
+#[pyclass]
+pub(crate) struct MessagePort {
+    shared: Arc<MessagePortShared>,
+}
+
+impl MessagePort {
+    pub(crate) fn new_py(py: Python<'_>, shared: Arc<MessagePortShared>) -> PyResult<Py<Self>> {
+        let port = Py::new(
+            py,
+            Self {
+                shared: Arc::clone(&shared),
+            },
+        )?;
+        shared.registry.lock().unwrap().owner = Some(port.clone_ref(py).into_any());
+        Ok(port)
+    }
+}
+
+fn message_event_py(
+    py: Python<'_>,
+    registry: &Arc<Mutex<EventTargetRegistry>>,
+    data: BasicMessageValue,
+) -> PyResult<Py<PyAny>> {
+    let owner = EventTarget::owner_for_registry(py, registry);
+    let event = Py::new(
+        py,
+        PyClassInitializer::from(Event::new_dispatched(
+            "message",
+            owner.as_ref().map(|owner| owner.clone_ref(py)),
+            owner.as_ref().map(|owner| owner.clone_ref(py)),
+        ))
+        .add_subclass(MessageEvent { data }),
+    )?;
+    Ok(event.into_any())
+}
+
+fn set_shared_event_handler(
+    registry: &Arc<Mutex<EventTargetRegistry>>,
+    type_: &str,
+    handler: Option<Py<PyAny>>,
+) {
+    let mut registry = registry.lock().unwrap();
+    if let Some(handler) = handler {
+        registry.handlers.insert(type_.to_owned(), handler);
+    } else {
+        registry.handlers.remove(type_);
+    }
+}
+
+fn add_shared_listener(
+    registry: &Arc<Mutex<EventTargetRegistry>>,
+    type_: &str,
+    listener: Py<PyAny>,
+) {
+    registry
+        .lock()
+        .unwrap()
+        .listeners
+        .entry(type_.to_owned())
+        .or_default()
+        .push(listener);
+}
+
+fn remove_shared_listener(
+    py: Python<'_>,
+    registry: &Arc<Mutex<EventTargetRegistry>>,
+    type_: &str,
+    listener: &Py<PyAny>,
+) {
+    if let Some(listeners) = registry.lock().unwrap().listeners.get_mut(type_) {
+        let listener_ptr = listener.bind(py).as_ptr();
+        listeners.retain(|existing: &Py<PyAny>| existing.bind(py).as_ptr() != listener_ptr);
+    }
+}
+
+enum WorkletCommand {
+    CreateProcessor {
+        bridge_id: u64,
+        registration_name: String,
+        options: BasicMessageValue,
+        processor_port: Arc<MessagePortShared>,
+        reply: SyncSender<Result<(), String>>,
+    },
+    ProcessQuantum {
+        bridge_id: u64,
+        inputs: Vec<Vec<Vec<f32>>>,
+        outputs: Vec<Vec<Vec<f32>>>,
+        parameters: Vec<(String, Vec<f32>)>,
+        reply: SyncSender<Result<(Vec<Vec<Vec<f32>>>, bool), String>>,
+    },
+    DeliverToProcessor {
+        bridge_id: u64,
+        value: BasicMessageValue,
+    },
+    DeliverToGlobal {
+        value: BasicMessageValue,
+    },
+    DropProcessor {
+        bridge_id: u64,
+    },
+}
+
+struct RegisteredPythonWorklet {
+    class: Py<PyAny>,
+    descriptors: Vec<web_audio_api_rs::AudioParamDescriptor>,
+}
+
+struct WorkletHost {
+    registrations: Mutex<HashMap<String, RegisteredPythonWorklet>>,
+    sender: mpsc::Sender<WorkletCommand>,
+    next_bridge_id: std::sync::atomic::AtomicU64,
+    global_port: Arc<MessagePortShared>,
+}
+
+static WORKLET_HOST: OnceLock<WorkletHost> = OnceLock::new();
+
+fn worklet_host() -> &'static WorkletHost {
+    WORKLET_HOST.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel();
+        let global_port = MessagePortShared::new(MessagePortEndpoint::AudioWorkletGlobal);
+        let runtime_global_port = Arc::clone(&global_port);
+        thread::spawn(move || worklet_runtime_loop(receiver, runtime_global_port));
+        WorkletHost {
+            registrations: Mutex::new(HashMap::new()),
+            sender,
+            next_bridge_id: std::sync::atomic::AtomicU64::new(1),
+            global_port,
+        }
+    })
+}
+
+fn worklet_global_port_shared() -> Arc<MessagePortShared> {
+    Arc::clone(&worklet_host().global_port)
+}
+
+pub(crate) fn next_worklet_bridge_id() -> u64 {
+    worklet_host()
+        .next_bridge_id
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn register_worklet_processor(
+    py: Python<'_>,
+    class: &Bound<'_, PyAny>,
+) -> PyResult<(String, Vec<web_audio_api_rs::AudioParamDescriptor>)> {
+    let name = class
+        .getattr("name")
+        .map_err(|_| {
+            PyTypeError::new_err(
+                "AudioWorkletProcessor subclass must define class attribute 'name'",
+            )
+        })?
+        .extract::<String>()?;
+    if name.is_empty() {
+        return Err(PyValueError::new_err(
+            "AudioWorkletProcessor.name must be a non-empty string",
+        ));
+    }
+
+    if !class.hasattr("process")? {
+        return Err(PyTypeError::new_err(
+            "AudioWorkletProcessor subclass must define process(self, inputs, outputs, parameters)",
+        ));
+    }
+
+    let descriptors = if class.hasattr("parameterDescriptors")? {
+        let raw = class.call_method0("parameterDescriptors")?;
+        parse_audio_param_descriptors(&raw)?
+    } else {
+        Vec::new()
+    };
+
+    let host = worklet_host();
+    let mut registrations = host.registrations.lock().unwrap();
+    if registrations.contains_key(&name) {
+        return Err(PyValueError::new_err(format!(
+            "AudioWorklet processor '{name}' is already registered"
+        )));
+    }
+    registrations.insert(
+        name.clone(),
+        RegisteredPythonWorklet {
+            class: class.clone().unbind(),
+            descriptors: descriptors.clone(),
+        },
+    );
+    let _ = py;
+    Ok((name, descriptors))
+}
+
+pub(crate) fn parse_audio_param_descriptors(
+    raw: &Bound<'_, PyAny>,
+) -> PyResult<Vec<web_audio_api_rs::AudioParamDescriptor>> {
+    let list = raw.cast::<PyList>().map_err(|_| {
+        PyTypeError::new_err("parameterDescriptors() must return a list of descriptor dicts")
+    })?;
+    let mut descriptors = Vec::with_capacity(list.len());
+    let mut seen = std::collections::HashSet::new();
+    for item in list.iter() {
+        let dict = item
+            .cast::<PyDict>()
+            .map_err(|_| PyTypeError::new_err("AudioParamDescriptor entries must be dicts"))?;
+        let name = dict
+            .get_item("name")?
+            .ok_or_else(|| PyTypeError::new_err("AudioParamDescriptor.name is required"))?
+            .extract::<String>()?;
+        if !seen.insert(name.clone()) {
+            return Err(PyValueError::new_err(format!(
+                "duplicate AudioParamDescriptor name '{name}'"
+            )));
+        }
+        let default_value = dict
+            .get_item("defaultValue")?
+            .map(|value| value.extract::<f32>())
+            .transpose()?
+            .unwrap_or(0.0);
+        let min_value = dict
+            .get_item("minValue")?
+            .map(|value| value.extract::<f32>())
+            .transpose()?
+            .unwrap_or(-3.4028235e38_f32);
+        let max_value = dict
+            .get_item("maxValue")?
+            .map(|value| value.extract::<f32>())
+            .transpose()?
+            .unwrap_or(3.4028235e38_f32);
+        let automation_rate = dict
+            .get_item("automationRate")?
+            .map(|value| automation_rate_from_str(value.extract::<&str>()?))
+            .transpose()?
+            .unwrap_or(AutomationRate::A);
+        descriptors.push(web_audio_api_rs::AudioParamDescriptor {
+            name,
+            default_value,
+            min_value,
+            max_value,
+            automation_rate,
+        });
+    }
+    Ok(descriptors)
+}
+
+fn find_processor_class_in_module<'py>(
+    module: &'py Bound<'py, PyModule>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let mut matches = Vec::new();
+    for (_, value) in module.dict().iter() {
+        if let Ok(class) = value.cast::<PyType>() {
+            if class.is_subclass_of::<AudioWorkletProcessor>()? {
+                matches.push(value);
+            }
+        } else if value.is_instance_of::<AudioWorkletProcessor>() {
+            matches.push(value);
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => Err(PyTypeError::new_err(
+            "module must contain exactly one AudioWorkletProcessor subclass",
+        )),
+        _ => Err(PyTypeError::new_err(
+            "module contains more than one AudioWorkletProcessor subclass",
+        )),
+    }
+}
+
+#[pyclass(skip_from_py_object)]
+#[derive(Clone)]
+pub(crate) struct AudioParamMap {
+    pub(crate) params: Vec<(String, AudioParam)>,
+}
+
+#[pymethods]
+impl AudioParamMap {
+    pub(crate) fn get(&self, name: &str) -> Option<AudioParam> {
+        self.params
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+    }
+
+    pub(crate) fn keys(&self) -> Vec<String> {
+        self.params.iter().map(|(key, _)| key.clone()).collect()
+    }
+
+    pub(crate) fn items(&self) -> Vec<(String, AudioParam)> {
+        self.params.clone()
+    }
+
+    pub(crate) fn __len__(&self) -> usize {
+        self.params.len()
+    }
+
+    pub(crate) fn __getitem__(&self, name: &str) -> PyResult<AudioParam> {
+        self.get(name)
+            .ok_or_else(|| PyKeyError::new_err(name.to_owned()))
+    }
+}
+
+#[pyclass]
+pub(crate) struct AudioWorklet {
+    port: Py<MessagePort>,
+}
+
+#[pymethods]
+impl AudioWorklet {
+    #[pyo3(name = "addModule")]
+    pub(crate) fn add_module(&self, module_or_processor: &Bound<'_, PyAny>) -> PyResult<()> {
+        if let Ok(module) = module_or_processor.cast::<PyModule>() {
+            let class = find_processor_class_in_module(module)?;
+            register_worklet_processor(module.py(), &class)?;
+            return Ok(());
+        }
+        register_worklet_processor(module_or_processor.py(), module_or_processor)?;
+        Ok(())
+    }
+
+    #[getter]
+    pub(crate) fn port(&self, py: Python<'_>) -> Py<MessagePort> {
+        self.port.clone_ref(py)
+    }
+}
+
+impl AudioWorklet {
+    pub(crate) fn new_py(py: Python<'_>) -> PyResult<Py<Self>> {
+        let port = MessagePort::new_py(py, worklet_global_port_shared())?;
+        Py::new(py, Self { port })
+    }
+}
+
+#[pyclass(subclass)]
+pub(crate) struct AudioWorkletProcessor {
+    port: Option<Py<MessagePort>>,
+}
+
+#[pymethods]
+impl AudioWorkletProcessor {
+    #[new]
+    #[pyo3(signature = (_options=None))]
+    pub(crate) fn new(_options: Option<&Bound<'_, PyAny>>) -> Self {
+        Self { port: None }
+    }
+
+    #[getter]
+    pub(crate) fn port(&self, py: Python<'_>) -> Py<PyAny> {
+        self.port
+            .as_ref()
+            .map(|port| port.clone_ref(py).into_any())
+            .unwrap_or_else(|| py.None())
+    }
+}
+
+#[pymethods]
+impl MessagePort {
+    #[getter]
+    pub(crate) fn onmessage(&self, py: Python<'_>) -> Py<PyAny> {
+        self.shared
+            .registry
+            .lock()
+            .unwrap()
+            .handlers
+            .get("message")
+            .map(|handler| handler.clone_ref(py))
+            .unwrap_or_else(|| py.None())
+    }
+
+    #[setter]
+    pub(crate) fn set_onmessage(&self, value: Option<Py<PyAny>>) {
+        set_shared_event_handler(&self.shared.registry, "message", value);
+    }
+
+    #[pyo3(name = "addEventListener")]
+    pub(crate) fn add_event_listener(
+        &self,
+        py: Python<'_>,
+        type_: &str,
+        listener: Py<PyAny>,
+    ) -> PyResult<()> {
+        if !listener.bind(py).is_callable() {
+            return Err(PyTypeError::new_err("listener must be callable"));
+        }
+        add_shared_listener(&self.shared.registry, type_, listener);
+        Ok(())
+    }
+
+    #[pyo3(name = "removeEventListener")]
+    pub(crate) fn remove_event_listener(&self, py: Python<'_>, type_: &str, listener: Py<PyAny>) {
+        remove_shared_listener(py, &self.shared.registry, type_, &listener);
+    }
+
+    #[pyo3(name = "postMessage")]
+    pub(crate) fn post_message(&self, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let value = py_to_basic_message_value(value)?;
+        match &self.shared.endpoint {
+            MessagePortEndpoint::AudioWorkletGlobal => worklet_host()
+                .sender
+                .send(WorkletCommand::DeliverToGlobal { value })
+                .map_err(|err| PyRuntimeError::new_err(err.to_string())),
+            MessagePortEndpoint::Node { node } => catch_web_audio_panic(|| {
+                let node = node
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .expect("worklet node port is not attached yet")
+                    .clone();
+                node.lock().unwrap().port().post_message(value);
+            }),
+            MessagePortEndpoint::Processor { bridge_id } => {
+                dispatch_message_to_node(*bridge_id, value)
+            }
+        }
+    }
+}
+
+fn dispatch_message_to_node(bridge_id: u64, value: BasicMessageValue) -> PyResult<()> {
+    if let Some(shared) = bridge_node_port_shared(bridge_id) {
+        Python::attach(|py| {
+            let event = message_event_py(py, &shared.registry, value)?;
+            EventTarget::dispatch_event_object(py, &shared.registry, "message", event)
+        })?;
+    }
+    Ok(())
+}
+
+fn dispatch_message_to_port_registry(
+    py: Python<'_>,
+    shared: &Arc<MessagePortShared>,
+    value: BasicMessageValue,
+) -> PyResult<()> {
+    let event = message_event_py(py, &shared.registry, value)?;
+    EventTarget::dispatch_event_object(py, &shared.registry, "message", event)
+}
+
+struct PythonWorkletInstance {
+    processor: Py<PyAny>,
+    processor_port: Arc<MessagePortShared>,
+}
+
+fn worklet_runtime_loop(receiver: Receiver<WorkletCommand>, global_port: Arc<MessagePortShared>) {
+    let mut processors: HashMap<u64, PythonWorkletInstance> = HashMap::new();
+    while let Ok(command) = receiver.recv() {
+        match command {
+            WorkletCommand::CreateProcessor {
+                bridge_id,
+                registration_name,
+                options,
+                processor_port,
+                reply,
+            } => {
+                let result = Python::attach(|py| -> PyResult<()> {
+                    let host = worklet_host();
+                    let registrations = host.registrations.lock().unwrap();
+                    let registration = registrations.get(&registration_name).ok_or_else(|| {
+                        PyRuntimeError::new_err(format!(
+                            "AudioWorklet processor '{registration_name}' is not registered"
+                        ))
+                    })?;
+                    let options_py = basic_message_value_to_py(py, &options)?;
+                    let instance = registration.class.bind(py).call1((options_py,))?;
+                    let port = MessagePort::new_py(py, Arc::clone(&processor_port))?;
+                    let mut base = instance.extract::<PyRefMut<'_, AudioWorkletProcessor>>()?;
+                    base.port = Some(port);
+                    drop(base);
+                    processors.insert(
+                        bridge_id,
+                        PythonWorkletInstance {
+                            processor: instance.unbind(),
+                            processor_port,
+                        },
+                    );
+                    Ok(())
+                })
+                .map_err(|err| err.to_string());
+                let _ = reply.send(result);
+            }
+            WorkletCommand::ProcessQuantum {
+                bridge_id,
+                inputs,
+                outputs,
+                parameters,
+                reply,
+            } => {
+                let result = Python::attach(|py| -> PyResult<(Vec<Vec<Vec<f32>>>, bool)> {
+                    let instance = processors.get(&bridge_id).ok_or_else(|| {
+                        PyRuntimeError::new_err("worklet processor instance is missing")
+                    })?;
+
+                    let inputs_py = PyList::new(
+                        py,
+                        inputs
+                            .iter()
+                            .map(|input| {
+                                PyList::new(py, input.iter().map(|channel| channel.clone()))
+                            })
+                            .collect::<PyResult<Vec<_>>>()?,
+                    )?;
+
+                    let output_lists = outputs
+                        .iter()
+                        .map(|output| PyList::new(py, output.iter().map(|channel| channel.clone())))
+                        .collect::<PyResult<Vec<_>>>()?;
+                    let outputs_py = PyList::new(py, output_lists)?;
+
+                    let params_py = PyDict::new(py);
+                    for (name, values) in parameters {
+                        params_py.set_item(name, values)?;
+                    }
+
+                    let keepalive = instance
+                        .processor
+                        .bind(py)
+                        .call_method1("process", (inputs_py, outputs_py.clone(), params_py))?
+                        .extract::<bool>()?;
+
+                    let mut copied_outputs = Vec::new();
+                    for output in outputs_py.iter() {
+                        let output = output.cast::<PyList>()?;
+                        let mut output_channels = Vec::new();
+                        for channel in output.iter() {
+                            output_channels.push(channel.extract::<Vec<f32>>()?);
+                        }
+                        copied_outputs.push(output_channels);
+                    }
+
+                    Ok((copied_outputs, keepalive))
+                })
+                .map_err(|err| err.to_string());
+                let _ = reply.send(result);
+            }
+            WorkletCommand::DeliverToProcessor { bridge_id, value } => {
+                let _ = Python::attach(|py| -> PyResult<()> {
+                    let Some(instance) = processors.get(&bridge_id) else {
+                        return Ok(());
+                    };
+                    let value_py = basic_message_value_to_py(py, &value)?;
+                    if instance.processor.bind(py).hasattr("onmessage")? {
+                        instance
+                            .processor
+                            .bind(py)
+                            .call_method1("onmessage", (value_py.clone_ref(py),))?;
+                    }
+                    dispatch_message_to_port_registry(py, &instance.processor_port, value)?;
+                    Ok(())
+                });
+            }
+            WorkletCommand::DeliverToGlobal { value } => {
+                let _ =
+                    Python::attach(|py| dispatch_message_to_port_registry(py, &global_port, value));
+            }
+            WorkletCommand::DropProcessor { bridge_id } => {
+                processors.remove(&bridge_id);
+            }
+        }
+    }
+}
+
+fn bridge_construct_processor(
+    bridge_id: u64,
+    registration_name: String,
+    options: BasicMessageValue,
+    processor_port: Arc<MessagePortShared>,
+) -> Result<(), String> {
+    let (send, recv) = mpsc::sync_channel(1);
+    worklet_host()
+        .sender
+        .send(WorkletCommand::CreateProcessor {
+            bridge_id,
+            registration_name,
+            options,
+            processor_port,
+            reply: send,
+        })
+        .map_err(|err| err.to_string())?;
+    recv.recv().map_err(|err| err.to_string())?
+}
+
+fn bridge_process_quantum(
+    bridge_id: u64,
+    inputs: Vec<Vec<Vec<f32>>>,
+    outputs: Vec<Vec<Vec<f32>>>,
+    parameters: Vec<(String, Vec<f32>)>,
+) -> Result<(Vec<Vec<Vec<f32>>>, bool), String> {
+    let (send, recv) = mpsc::sync_channel(1);
+    worklet_host()
+        .sender
+        .send(WorkletCommand::ProcessQuantum {
+            bridge_id,
+            inputs,
+            outputs,
+            parameters,
+            reply: send,
+        })
+        .map_err(|err| err.to_string())?;
+    recv.recv().map_err(|err| err.to_string())?
+}
+
+fn bridge_deliver_to_processor(bridge_id: u64, value: BasicMessageValue) {
+    let _ = worklet_host()
+        .sender
+        .send(WorkletCommand::DeliverToProcessor { bridge_id, value });
+}
+
+fn bridge_drop_processor(bridge_id: u64) {
+    let _ = worklet_host()
+        .sender
+        .send(WorkletCommand::DropProcessor { bridge_id });
+}
+
+struct BridgeDescriptorContext {
+    descriptors: Vec<web_audio_api_rs::AudioParamDescriptor>,
+}
+
+thread_local! {
+    static BRIDGE_DESCRIPTOR_CONTEXT: RefCell<Option<BridgeDescriptorContext>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn with_worklet_descriptors<T>(
+    descriptors: Vec<web_audio_api_rs::AudioParamDescriptor>,
+    f: impl FnOnce() -> T,
+) -> T {
+    BRIDGE_DESCRIPTOR_CONTEXT.with(|context| {
+        *context.borrow_mut() = Some(BridgeDescriptorContext { descriptors });
+        let result = f();
+        *context.borrow_mut() = None;
+        result
+    })
+}
+
+fn current_worklet_descriptors() -> Vec<web_audio_api_rs::AudioParamDescriptor> {
+    BRIDGE_DESCRIPTOR_CONTEXT.with(|context| {
+        context
+            .borrow()
+            .as_ref()
+            .map(|context| context.descriptors.clone())
+            .unwrap_or_default()
+    })
+}
+
+#[derive(Clone)]
+pub(crate) struct PythonWorkletBridgeOptions {
+    pub(crate) bridge_id: u64,
+    pub(crate) registration_name: String,
+    pub(crate) processor_options: BasicMessageValue,
+    pub(crate) node_port: Arc<MessagePortShared>,
+}
+
+impl Default for PythonWorkletBridgeOptions {
+    fn default() -> Self {
+        Self {
+            bridge_id: 0,
+            registration_name: String::new(),
+            processor_options: BasicMessageValue::None,
+            node_port: new_worklet_node_port_shared(),
+        }
+    }
+}
+
+pub(crate) struct PythonWorkletBridgeProcessor {
+    bridge_id: u64,
+    dead: bool,
+}
+
+impl Drop for PythonWorkletBridgeProcessor {
+    fn drop(&mut self) {
+        bridge_drop_processor(self.bridge_id);
+    }
+}
+
+impl web_audio_api_rs::worklet::AudioWorkletProcessor for PythonWorkletBridgeProcessor {
+    type ProcessorOptions = PythonWorkletBridgeOptions;
+
+    fn constructor(opts: Self::ProcessorOptions) -> Self {
+        let processor_port = MessagePortShared::new(MessagePortEndpoint::Processor {
+            bridge_id: opts.bridge_id,
+        });
+        bridge_construct_processor(
+            opts.bridge_id,
+            opts.registration_name.clone(),
+            opts.processor_options,
+            Arc::clone(&processor_port),
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        register_bridge_node_port(opts.bridge_id, opts.node_port);
+        Self {
+            bridge_id: opts.bridge_id,
+            dead: false,
+        }
+    }
+
+    fn parameter_descriptors() -> Vec<web_audio_api_rs::AudioParamDescriptor> {
+        current_worklet_descriptors()
+    }
+
+    fn process<'a, 'b>(
+        &mut self,
+        inputs: &'b [&'a [&'a [f32]]],
+        outputs: &'b mut [&'a mut [&'a mut [f32]]],
+        params: web_audio_api_rs::worklet::AudioParamValues<'b>,
+        _scope: &'b web_audio_api_rs::worklet::AudioWorkletGlobalScope,
+    ) -> bool {
+        if self.dead {
+            for output in outputs.iter_mut() {
+                for channel in output.iter_mut() {
+                    channel.fill(0.0);
+                }
+            }
+            return false;
+        }
+
+        let inputs_vec = inputs
+            .iter()
+            .map(|input| {
+                input
+                    .iter()
+                    .map(|channel| channel.to_vec())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let outputs_template = outputs
+            .iter()
+            .map(|output| {
+                output
+                    .iter()
+                    .map(|channel| vec![0.0; channel.len()])
+                    .collect()
+            })
+            .collect::<Vec<Vec<Vec<f32>>>>();
+        let parameters = params
+            .keys()
+            .map(|key| (key.to_owned(), params.get(key).to_vec()))
+            .collect::<Vec<_>>();
+
+        let (rendered_outputs, keepalive) =
+            bridge_process_quantum(self.bridge_id, inputs_vec, outputs_template, parameters)
+                .unwrap_or_else(|err| panic!("{err}"));
+
+        for (output, rendered) in outputs.iter_mut().zip(rendered_outputs.iter()) {
+            for (channel, rendered_channel) in output.iter_mut().zip(rendered.iter()) {
+                channel.copy_from_slice(rendered_channel);
+            }
+        }
+        keepalive
+    }
+
+    fn onmessage(&mut self, msg: &mut dyn Any) {
+        if let Some(value) = msg.downcast_mut::<BasicMessageValue>() {
+            bridge_deliver_to_processor(self.bridge_id, value.clone());
+        }
+    }
+}
+
+static WORKLET_NODE_PORTS: OnceLock<Mutex<HashMap<u64, Arc<MessagePortShared>>>> = OnceLock::new();
+
+fn worklet_node_ports() -> &'static Mutex<HashMap<u64, Arc<MessagePortShared>>> {
+    WORKLET_NODE_PORTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_bridge_node_port(bridge_id: u64, shared: Arc<MessagePortShared>) {
+    worklet_node_ports()
+        .lock()
+        .unwrap()
+        .insert(bridge_id, shared);
+}
+
+fn bridge_node_port_shared(bridge_id: u64) -> Option<Arc<MessagePortShared>> {
+    worklet_node_ports()
+        .lock()
+        .unwrap()
+        .get(&bridge_id)
+        .cloned()
+}
+
+pub(crate) fn registered_worklet_descriptors(
+    name: &str,
+) -> PyResult<Vec<web_audio_api_rs::AudioParamDescriptor>> {
+    worklet_host()
+        .registrations
+        .lock()
+        .unwrap()
+        .get(name)
+        .map(|registration| registration.descriptors.clone())
+        .ok_or_else(|| {
+            PyRuntimeError::new_err(format!("AudioWorklet processor '{name}' is not registered"))
+        })
 }
 
 #[pymethods]
