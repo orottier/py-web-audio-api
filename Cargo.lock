@@ -1347,7 +1347,7 @@ dependencies = [
 
 [[package]]
 name = "web-audio-api"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "pyo3",
  "pyo3-async-runtimes",
