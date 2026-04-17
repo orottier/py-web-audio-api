@@ -898,6 +898,15 @@ impl AudioContext {
         })
     }
 
+    #[pyo3(name = "createMediaElementSource")]
+    pub(crate) fn create_media_element_source(
+        &self,
+        py: Python<'_>,
+        media_element: PyRef<'_, MediaElement>,
+    ) -> PyResult<Py<MediaElementAudioSourceNode>> {
+        media_element_audio_source_node_py(py, self.0.as_ref(), &media_element)
+    }
+
     #[pyo3(name = "createMediaStreamSource")]
     pub(crate) fn create_media_stream_source(
         &self,

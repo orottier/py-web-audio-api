@@ -272,6 +272,44 @@ where
 }
 
 #[cfg(test)]
+pub(crate) fn media_element_audio_source_node_parts(
+    ctx: &web_audio_api_rs::context::AudioContext,
+    media_element: &MediaElement,
+) -> PyResult<(MediaElementAudioSourceNode, AudioNode)> {
+    let node = catch_web_audio_panic_result(|| {
+        ctx.create_media_element_source(&mut media_element.0.lock().unwrap())
+    })?;
+    Ok(wrap_audio_node(node, |_| MediaElementAudioSourceNode {
+        media_element: media_element.clone(),
+    }))
+}
+
+pub(crate) fn media_element_audio_source_node(
+    ctx: &web_audio_api_rs::context::AudioContext,
+    media_element: &MediaElement,
+) -> PyResult<PyClassInitializer<MediaElementAudioSourceNode>> {
+    let node = catch_web_audio_panic_result(|| {
+        ctx.create_media_element_source(&mut media_element.0.lock().unwrap())
+    })?;
+    Ok(init_audio_node(node, |_| MediaElementAudioSourceNode {
+        media_element: media_element.clone(),
+    }))
+}
+
+pub(crate) fn media_element_audio_source_node_py(
+    py: Python<'_>,
+    ctx: &web_audio_api_rs::context::AudioContext,
+    media_element: &MediaElement,
+) -> PyResult<Py<MediaElementAudioSourceNode>> {
+    let node = catch_web_audio_panic_result(|| {
+        ctx.create_media_element_source(&mut media_element.0.lock().unwrap())
+    })?;
+    new_audio_node_py(py, node, |_| MediaElementAudioSourceNode {
+        media_element: media_element.clone(),
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn audio_buffer_source_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AudioBufferSourceOptions,
@@ -1721,6 +1759,11 @@ pub(crate) struct AudioBufferSourceNode(
 );
 
 #[pyclass(extends = AudioNode)]
+pub(crate) struct MediaElementAudioSourceNode {
+    media_element: MediaElement,
+}
+
+#[pyclass(extends = AudioNode)]
 pub(crate) struct MediaStreamAudioSourceNode {
     media_stream: MediaStream,
 }
@@ -1837,6 +1880,34 @@ impl AudioBufferSourceNode {
                 node.start_at_with_offset(when, offset);
             }
         })
+    }
+}
+
+#[pymethods]
+impl MediaElementAudioSourceNode {
+    #[new]
+    pub(crate) fn new(
+        ctx: PyRef<'_, AudioContext>,
+        options: &Bound<'_, PyAny>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = options.cast::<PyDict>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("MediaElementAudioSourceOptions must be a dict")
+        })?;
+        let media_element = options
+            .get_item("mediaElement")?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyTypeError::new_err(
+                    "MediaElementAudioSourceOptions.mediaElement is required",
+                )
+            })?
+            .extract::<PyRef<'_, MediaElement>>()?;
+
+        media_element_audio_source_node(ctx.0.as_ref(), &media_element)
+    }
+
+    #[getter(mediaElement)]
+    pub(crate) fn media_element(&self) -> MediaElement {
+        self.media_element.clone()
     }
 }
 

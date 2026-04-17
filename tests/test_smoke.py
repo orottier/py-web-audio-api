@@ -1,5 +1,7 @@
 import asyncio
 import io
+import os
+import tempfile
 import threading
 import time
 import unittest
@@ -42,6 +44,11 @@ class WebAudioApiSmokeTest(unittest.TestCase):
     def unique_worklet_name(cls, prefix="processor"):
         cls._worklet_counter += 1
         return f"{prefix}_{cls._worklet_counter}"
+
+    def write_wav_file(self, samples, sample_rate=8_000):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav_file:
+            wav_file.write(self.wav_bytes(samples, sample_rate))
+            return wav_file.name
 
     def test_audio_node_idl_surface_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
@@ -584,6 +591,62 @@ class WebAudioApiSmokeTest(unittest.TestCase):
     def test_media_stream_is_not_constructible(self):
         with self.assertRaises(TypeError):
             web_audio_api.MediaStream()
+
+    def test_media_element_surface_is_wired(self):
+        path = self.write_wav_file([0.0, 0.25, -0.25, 0.5])
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+
+        media = web_audio_api.MediaElement(path)
+
+        self.assertTrue(media.paused)
+        self.assertEqual(media.currentTime, 0.0)
+        self.assertFalse(media.loop)
+        self.assertEqual(media.playbackRate, 1.0)
+
+        media.currentTime = 0.125
+        media.loop = True
+        media.playbackRate = 1.5
+        media.play()
+        media.pause()
+
+        self.assertIsInstance(media.currentTime, float)
+        self.assertIsInstance(media.loop, bool)
+        self.assertIsInstance(media.playbackRate, float)
+        self.assertIsInstance(media.paused, bool)
+
+    def test_media_element_audio_source_surface_is_wired(self):
+        path = self.write_wav_file([0.0, 0.25, -0.25, 0.5])
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        media = web_audio_api.MediaElement(path)
+
+        source = ctx.createMediaElementSource(media)
+
+        self.assertIsInstance(source, web_audio_api.MediaElementAudioSourceNode)
+        self.assertIsInstance(source, web_audio_api.AudioNode)
+        self.assertIsInstance(source.mediaElement, web_audio_api.MediaElement)
+
+        direct = web_audio_api.MediaElementAudioSourceNode(
+            ctx, {"mediaElement": web_audio_api.MediaElement(path)}
+        )
+        self.assertIsInstance(direct, web_audio_api.MediaElementAudioSourceNode)
+
+        self.run_async(lambda: ctx.close())
+
+    def test_media_element_only_supports_one_source_node(self):
+        path = self.write_wav_file([0.0, 0.25, -0.25, 0.5])
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        media = web_audio_api.MediaElement(path)
+
+        node = ctx.createMediaElementSource(media)
+        self.assertIsInstance(node, web_audio_api.MediaElementAudioSourceNode)
+        with self.assertRaises(RuntimeError):
+            ctx.createMediaElementSource(media)
+
+        self.run_async(lambda: ctx.close())
 
     def test_get_user_media_sync_entrypoint_is_wired(self):
         ctx = web_audio_api.AudioContext({"sinkId": "none"})

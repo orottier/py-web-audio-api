@@ -102,6 +102,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioWorklet>()?;
     m.add_class::<AudioWorkletProcessor>()?;
     m.add_class::<MediaDeviceInfo>()?;
+    m.add_class::<MediaElement>()?;
     m.add_class::<MediaRecorder>()?;
     m.add_class::<MediaStream>()?;
     m.add_class::<MediaStreamTrack>()?;
@@ -128,6 +129,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PannerNode>()?;
     m.add_class::<ScriptProcessorNode>()?;
     m.add_class::<AudioWorkletNode>()?;
+    m.add_class::<MediaElementAudioSourceNode>()?;
     m.add_class::<MediaStreamAudioSourceNode>()?;
     m.add_class::<MediaStreamTrackAudioSourceNode>()?;
     m.add_class::<MediaStreamAudioDestinationNode>()?;
@@ -144,8 +146,11 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::mpsc;
     use std::time::Duration;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn silent_audio_context_options() -> web_audio_api_rs::context::AudioContextOptions {
         web_audio_api_rs::context::AudioContextOptions {
@@ -176,6 +181,42 @@ mod tests {
             OfflineAudioContext(Arc::clone(&ctx)),
             BaseAudioContext::new(BaseAudioContextInner::Offline(ctx)),
         )
+    }
+
+    fn write_wav_fixture(samples: &[f32], sample_rate: u32) -> PathBuf {
+        let mut pcm = Vec::with_capacity(samples.len() * 2);
+        for sample in samples {
+            let value = (sample.clamp(-1.0, 1.0) * 32767.0) as i16;
+            pcm.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let data_len = pcm.len() as u32;
+        let mut wav = Vec::with_capacity(44 + pcm.len());
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        wav.extend_from_slice(&pcm);
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "py-web-audio-api-media-element-{unique}-{}.wav",
+            std::process::id()
+        ));
+        fs::write(&path, wav).unwrap();
+        path
     }
 
     #[test]
@@ -239,6 +280,21 @@ mod tests {
         assert_eq!(node.number_of_inputs().unwrap(), 1);
         assert_eq!(node.number_of_outputs().unwrap(), 0);
         assert_eq!(dest.stream().get_tracks().len(), 1);
+    }
+
+    #[test]
+    fn media_element_audio_source_graph_smoke_test() {
+        let (ctx, _) = audio_context_parts();
+        let path = write_wav_fixture(&[0.0, 0.25, -0.25, 0.5], 8_000);
+        let media_element = MediaElement(Arc::new(Mutex::new(
+            web_audio_api_rs::MediaElement::new(&path).unwrap(),
+        )));
+        let (_src, node) = media_element_audio_source_node_parts(&ctx.0, &media_element).unwrap();
+
+        assert_eq!(node.number_of_inputs().unwrap(), 0);
+        assert_eq!(node.number_of_outputs().unwrap(), 1);
+
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

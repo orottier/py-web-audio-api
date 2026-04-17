@@ -5,10 +5,15 @@ use pyo3::IntoPyObjectExt;
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::OnceLock;
 use std::thread;
+
+#[pyclass(skip_from_py_object)]
+#[derive(Clone)]
+pub(crate) struct MediaElement(pub(crate) Arc<Mutex<web_audio_api_rs::MediaElement>>);
 
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
@@ -156,6 +161,20 @@ pub(crate) struct MediaRecorder {
     stream: MediaStream,
     mime_type: String,
     state: Arc<AtomicU8>,
+}
+
+fn media_element_path(path: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
+    if let Ok(path) = path.extract::<PathBuf>() {
+        return Ok(path);
+    }
+
+    let os = PyModule::import(path.py(), "os")?;
+    let fspath = os.getattr("fspath")?;
+    fspath.call1((path,))?.extract::<PathBuf>().map_err(|_| {
+        PyTypeError::new_err(
+            "MediaElement path must be a string, pathlib.Path, or path-like object",
+        )
+    })
 }
 
 impl MediaDeviceInfo {
@@ -1235,6 +1254,60 @@ pub(crate) fn registered_worklet_descriptors(
         .ok_or_else(|| {
             PyRuntimeError::new_err(format!("AudioWorklet processor '{name}' is not registered"))
         })
+}
+
+#[pymethods]
+impl MediaElement {
+    #[new]
+    pub(crate) fn new(path: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let path = media_element_path(path)?;
+        let inner = catch_web_audio_panic_result(|| web_audio_api_rs::MediaElement::new(path))?
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        Ok(Self(Arc::new(Mutex::new(inner))))
+    }
+
+    #[getter(currentTime)]
+    pub(crate) fn current_time(&self) -> f64 {
+        self.0.lock().unwrap().current_time()
+    }
+
+    #[setter(currentTime)]
+    pub(crate) fn set_current_time(&self, value: f64) {
+        self.0.lock().unwrap().set_current_time(value);
+    }
+
+    #[getter]
+    pub(crate) fn r#loop(&self) -> bool {
+        self.0.lock().unwrap().loop_()
+    }
+
+    #[setter]
+    pub(crate) fn set_loop(&self, value: bool) {
+        self.0.lock().unwrap().set_loop(value);
+    }
+
+    #[getter]
+    pub(crate) fn paused(&self) -> bool {
+        self.0.lock().unwrap().paused()
+    }
+
+    #[getter(playbackRate)]
+    pub(crate) fn playback_rate(&self) -> f64 {
+        self.0.lock().unwrap().playback_rate()
+    }
+
+    #[setter(playbackRate)]
+    pub(crate) fn set_playback_rate(&self, value: f64) {
+        self.0.lock().unwrap().set_playback_rate(value);
+    }
+
+    pub(crate) fn play(&self) {
+        self.0.lock().unwrap().play();
+    }
+
+    pub(crate) fn pause(&self) {
+        self.0.lock().unwrap().pause();
+    }
 }
 
 #[pymethods]
