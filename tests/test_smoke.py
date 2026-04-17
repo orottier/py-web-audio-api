@@ -1513,6 +1513,17 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(success_calls, [decoded.length])
         self.assertEqual(error_calls, [])
 
+    def test_base_audio_context_decode_audio_data_accepts_file_like_objects(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
+        samples = [0.0, 0.25, -0.25, 0.5]
+        audio_file = io.BytesIO(self.wav_bytes(samples))
+
+        decoded = self.run_async(lambda: ctx.decodeAudioData(audio_file))
+
+        self.assertIsInstance(decoded, web_audio_api.AudioBuffer)
+        self.assertEqual(decoded.numberOfChannels, 1)
+        self.assertEqual(decoded.length, len(samples))
+
     def test_base_audio_context_decode_audio_data_error_callback_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
         error_calls = []

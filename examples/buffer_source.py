@@ -10,6 +10,10 @@ async def main():
     duration = 1.0
     length = int(sample_rate * duration)
 
+    # For a file-backed buffer instead, you can also do:
+    # with open("sound.wav", "rb") as f:
+    #     buffer = await ctx.decodeAudioData(f)
+
     buffer = ctx.createBuffer(1, length, sample_rate)
     samples = [
         math.sin(2.0 * math.pi * 330.0 * i / sample_rate)

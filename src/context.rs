@@ -165,6 +165,25 @@ fn decode_audio_data_future(
     }
 }
 
+fn decode_audio_data_input(audio_data: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    if let Ok(bytes) = audio_data.extract::<Vec<u8>>() {
+        return Ok(bytes);
+    }
+
+    let read = audio_data.getattr("read").map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err(
+            "decodeAudioData expects bytes-like data or a file-like object with read()",
+        )
+    })?;
+
+    let data = read.call0()?;
+    data.extract::<Vec<u8>>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err(
+            "decodeAudioData file-like read() must return bytes-like data",
+        )
+    })
+}
+
 fn offline_audio_completion_event_py(
     py: Python<'_>,
     registry: &Arc<Mutex<EventTargetRegistry>>,
@@ -784,10 +803,11 @@ impl BaseAudioContext {
     pub(crate) fn decode_audio_data<'py>(
         &self,
         py: Python<'py>,
-        audio_data: Vec<u8>,
+        audio_data: &Bound<'_, PyAny>,
         success_callback: Option<Py<PyAny>>,
         error_callback: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let audio_data = decode_audio_data_input(audio_data)?;
         let future = decode_audio_data_future(&self.inner, audio_data);
 
         into_py_future(py, async move {
