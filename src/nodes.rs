@@ -292,6 +292,39 @@ pub(crate) fn media_stream_audio_source_node_py(
 }
 
 #[cfg(test)]
+pub(crate) fn media_stream_track_audio_source_node_parts(
+    ctx: &web_audio_api_rs::context::AudioContext,
+    media_stream_track: &web_audio_api_rs::media_streams::MediaStreamTrack,
+) -> (MediaStreamTrackAudioSourceNode, AudioNode) {
+    wrap_audio_node(
+        ctx.create_media_stream_track_source(media_stream_track),
+        MediaStreamTrackAudioSourceNode,
+    )
+}
+
+pub(crate) fn media_stream_track_audio_source_node(
+    ctx: &web_audio_api_rs::context::AudioContext,
+    media_stream_track: &web_audio_api_rs::media_streams::MediaStreamTrack,
+) -> PyClassInitializer<MediaStreamTrackAudioSourceNode> {
+    init_audio_node(
+        ctx.create_media_stream_track_source(media_stream_track),
+        MediaStreamTrackAudioSourceNode,
+    )
+}
+
+pub(crate) fn media_stream_track_audio_source_node_py(
+    py: Python<'_>,
+    ctx: &web_audio_api_rs::context::AudioContext,
+    media_stream_track: &web_audio_api_rs::media_streams::MediaStreamTrack,
+) -> PyResult<Py<MediaStreamTrackAudioSourceNode>> {
+    new_audio_node_py(
+        py,
+        ctx.create_media_stream_track_source(media_stream_track),
+        MediaStreamTrackAudioSourceNode,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn analyser_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AnalyserOptions,
@@ -1568,6 +1601,11 @@ pub(crate) struct MediaStreamAudioSourceNode(
     pub(crate) Arc<Mutex<web_audio_api_rs::node::MediaStreamAudioSourceNode>>,
 );
 
+#[pyclass(extends = AudioNode)]
+pub(crate) struct MediaStreamTrackAudioSourceNode(
+    pub(crate) Arc<Mutex<web_audio_api_rs::node::MediaStreamTrackAudioSourceNode>>,
+);
+
 #[pymethods]
 impl AudioBufferSourceNode {
     #[new]
@@ -1695,6 +1733,34 @@ impl MediaStreamAudioSourceNode {
         Ok(media_stream_audio_source_node(
             ctx.0.as_ref(),
             &media_stream.0,
+        ))
+    }
+}
+
+#[pymethods]
+impl MediaStreamTrackAudioSourceNode {
+    #[new]
+    pub(crate) fn new(
+        ctx: PyRef<'_, AudioContext>,
+        options: &Bound<'_, PyAny>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = options.cast::<PyDict>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "MediaStreamTrackAudioSourceOptions must be a dict",
+            )
+        })?;
+        let media_stream_track = options
+            .get_item("mediaStreamTrack")?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyTypeError::new_err(
+                    "MediaStreamTrackAudioSourceOptions.mediaStreamTrack is required",
+                )
+            })?
+            .extract::<PyRef<'_, MediaStreamTrack>>()?;
+
+        Ok(media_stream_track_audio_source_node(
+            ctx.0.as_ref(),
+            &media_stream_track.0,
         ))
     }
 }

@@ -42,6 +42,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioProcessingEvent>()?;
     m.add_class::<AudioBuffer>()?;
     m.add_class::<MediaStream>()?;
+    m.add_class::<MediaStreamTrack>()?;
     m.add_class::<PeriodicWave>()?;
     m.add_class::<AudioListener>()?;
     m.add_class::<Event>()?;
@@ -64,6 +65,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PannerNode>()?;
     m.add_class::<ScriptProcessorNode>()?;
     m.add_class::<MediaStreamAudioSourceNode>()?;
+    m.add_class::<MediaStreamTrackAudioSourceNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -138,6 +140,24 @@ mod tests {
         ]);
         let stream = web_audio_api_rs::media_streams::MediaStream::from_tracks(vec![track]);
         let (_src, node) = media_stream_audio_source_node_parts(&ctx.0, &stream);
+
+        assert_eq!(node.number_of_inputs().unwrap(), 0);
+        assert_eq!(node.number_of_outputs().unwrap(), 1);
+    }
+
+    #[test]
+    fn media_stream_track_audio_source_graph_smoke_test() {
+        let (ctx, _) = audio_context_parts();
+        let buffer = web_audio_api_rs::AudioBuffer::new(web_audio_api_rs::AudioBufferOptions {
+            number_of_channels: 1,
+            length: 128,
+            sample_rate: 44_100.,
+        });
+        let track = web_audio_api_rs::media_streams::MediaStreamTrack::from_iter(vec![
+            Ok(buffer.clone()),
+            Ok(buffer),
+        ]);
+        let (_src, node) = media_stream_track_audio_source_node_parts(&ctx.0, &track);
 
         assert_eq!(node.number_of_inputs().unwrap(), 0);
         assert_eq!(node.number_of_outputs().unwrap(), 1);

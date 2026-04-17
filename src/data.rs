@@ -4,13 +4,43 @@ use super::*;
 #[derive(Clone)]
 pub(crate) struct MediaStream(pub(crate) web_audio_api_rs::media_streams::MediaStream);
 
+#[pyclass(skip_from_py_object)]
+#[derive(Clone)]
+pub(crate) struct MediaStreamTrack(pub(crate) web_audio_api_rs::media_streams::MediaStreamTrack);
+
 #[pymethods]
 impl MediaStream {
+    #[pyo3(name = "getTracks")]
+    pub(crate) fn get_tracks(&self) -> Vec<MediaStreamTrack> {
+        self.0
+            .get_tracks()
+            .iter()
+            .cloned()
+            .map(MediaStreamTrack)
+            .collect()
+    }
+
     #[pyo3(name = "close")]
     pub(crate) fn close(&self) {
         for track in self.0.get_tracks() {
             track.close();
         }
+    }
+}
+
+#[pymethods]
+impl MediaStreamTrack {
+    #[getter(readyState)]
+    pub(crate) fn ready_state(&self) -> &'static str {
+        match self.0.ready_state() {
+            web_audio_api_rs::media_streams::MediaStreamTrackState::Live => "live",
+            web_audio_api_rs::media_streams::MediaStreamTrackState::Ended => "ended",
+        }
+    }
+
+    #[pyo3(name = "close")]
+    pub(crate) fn close(&self) {
+        self.0.close();
     }
 }
 

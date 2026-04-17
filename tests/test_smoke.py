@@ -382,6 +382,29 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             self.assertIsInstance(node, web_audio_api.AudioNode)
             stream.close()
 
+    def test_media_stream_track_is_not_constructible(self):
+        with self.assertRaises(TypeError):
+            web_audio_api.MediaStreamTrack()
+
+    def test_media_stream_track_surface_is_wired(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+
+        try:
+            stream = web_audio_api.getUserMediaSync()
+        except RuntimeError as exc:
+            self.assertNotIsInstance(exc, TypeError)
+        else:
+            tracks = stream.getTracks()
+            self.assertGreaterEqual(len(tracks), 1)
+            track = tracks[0]
+            self.assertIsInstance(track, web_audio_api.MediaStreamTrack)
+            self.assertIn(track.readyState, ("live", "ended"))
+            node = ctx.createMediaStreamTrackSource(track)
+            self.assertIsInstance(node, web_audio_api.MediaStreamTrackAudioSourceNode)
+            self.assertIsInstance(node, web_audio_api.AudioNode)
+            track.close()
+            stream.close()
+
     def test_create_script_processor_passes_zero_buffer_size_through(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
 
