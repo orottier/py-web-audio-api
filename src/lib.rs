@@ -73,9 +73,7 @@ mod tests {
     }
 
     fn audio_context_parts() -> (AudioContext, BaseAudioContext) {
-        let ctx = Arc::new(Mutex::new(new_realtime_context(
-            silent_audio_context_options(),
-        )));
+        let ctx = Arc::new(new_realtime_context(silent_audio_context_options()));
         (
             AudioContext(Arc::clone(&ctx)),
             BaseAudioContext::new(BaseAudioContextInner::Realtime(ctx)),
@@ -87,12 +85,10 @@ mod tests {
         length: usize,
         sample_rate: f32,
     ) -> (OfflineAudioContext, BaseAudioContext) {
-        let ctx = Arc::new(Mutex::new(
-            web_audio_api_rs::context::OfflineAudioContext::new(
-                number_of_channels,
-                length,
-                sample_rate,
-            ),
+        let ctx = Arc::new(web_audio_api_rs::context::OfflineAudioContext::new(
+            number_of_channels,
+            length,
+            sample_rate,
         ));
         (
             OfflineAudioContext(Arc::clone(&ctx)),
@@ -119,10 +115,8 @@ mod tests {
     #[test]
     fn audio_node_shared_surface_works() {
         let (ctx, _) = offline_context_parts(1, 128, 44_100.);
-        let (_, gain_node) = gain_node_parts(
-            &*ctx.0.lock().unwrap(),
-            web_audio_api_rs::node::GainOptions::default(),
-        );
+        let (_, gain_node) =
+            gain_node_parts(&*ctx.0, web_audio_api_rs::node::GainOptions::default());
         assert_eq!(gain_node.number_of_inputs().unwrap(), 1);
         assert_eq!(gain_node.number_of_outputs().unwrap(), 1);
         assert_eq!(gain_node.channel_count().unwrap(), 2);
@@ -142,7 +136,7 @@ mod tests {
     fn analyser_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (mut analyser, analyser_node) = analyser_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::AnalyserOptions {
                 fft_size: 64,
                 ..Default::default()
@@ -166,7 +160,7 @@ mod tests {
             sample_rate: 44_100.,
         });
         let (mut convolver, convolver_node) = convolver_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::ConvolverOptions {
                 buffer: Some(buffer),
                 ..Default::default()
@@ -185,7 +179,7 @@ mod tests {
     fn dynamics_compressor_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (compressor, compressor_node) = dynamics_compressor_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::DynamicsCompressorOptions {
                 threshold: -18.,
                 ..Default::default()
@@ -203,7 +197,7 @@ mod tests {
     fn oscillator_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (osc, scheduled, osc_node) = oscillator_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::OscillatorOptions::default(),
         );
         let destination = base.destination_audio_node();
@@ -224,7 +218,7 @@ mod tests {
         std::thread::spawn(move || {
             let (ctx, _) = offline_context_parts(1, 128, 44_100.);
             let (_, _, node) = oscillator_node_parts(
-                &*ctx.0.lock().unwrap(),
+                &*ctx.0,
                 web_audio_api_rs::node::OscillatorOptions::default(),
             );
             let result = node
@@ -244,7 +238,7 @@ mod tests {
     fn constant_source_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (src, scheduled, src_node) = constant_source_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::ConstantSourceOptions { offset: 2. },
         );
         let destination = base.destination_audio_node();
@@ -265,7 +259,7 @@ mod tests {
             sample_rate: 44_100.,
         });
         let (src, scheduled, src_node) = audio_buffer_source_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::AudioBufferSourceOptions {
                 buffer: Some(buffer),
                 ..Default::default()
@@ -285,7 +279,7 @@ mod tests {
     fn gain_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (gain, gain_node) = gain_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::GainOptions {
                 gain: 0.5,
                 ..Default::default()
@@ -301,7 +295,7 @@ mod tests {
     fn delay_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (delay, delay_node) = delay_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::DelayOptions {
                 delay_time: 0.25,
                 ..Default::default()
@@ -317,7 +311,7 @@ mod tests {
     fn stereo_panner_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(2, 128, 44_100.);
         let (panner, panner_node) = stereo_panner_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::StereoPannerOptions {
                 pan: -0.5,
                 ..Default::default()
@@ -333,7 +327,7 @@ mod tests {
     fn channel_merger_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(2, 128, 44_100.);
         let (_, merger_node) = channel_merger_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::ChannelMergerOptions {
                 number_of_inputs: 2,
                 ..Default::default()
@@ -348,7 +342,7 @@ mod tests {
     fn channel_splitter_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(2, 128, 44_100.);
         let (_, splitter_node) = channel_splitter_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::ChannelSplitterOptions {
                 number_of_outputs: 2,
                 ..Default::default()
@@ -363,7 +357,7 @@ mod tests {
     fn biquad_filter_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(2, 128, 44_100.);
         let (mut filter, filter_node) = biquad_filter_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::BiquadFilterOptions::default(),
         );
         let destination = base.destination_audio_node();
@@ -378,7 +372,7 @@ mod tests {
     fn iir_filter_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (filter, filter_node) = iir_filter_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::IIRFilterOptions {
                 audio_node_options: web_audio_api_rs::node::AudioNodeOptions::default(),
                 feedforward: vec![1.0, 0.0],
@@ -401,7 +395,7 @@ mod tests {
     fn wave_shaper_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let (mut shaper, shaper_node) = wave_shaper_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::WaveShaperOptions::default(),
         );
         let destination = base.destination_audio_node();
@@ -417,10 +411,8 @@ mod tests {
     #[test]
     fn panner_graph_smoke_test() {
         let (ctx, base) = offline_context_parts(2, 128, 44_100.);
-        let (mut panner, panner_node) = panner_node_parts(
-            &*ctx.0.lock().unwrap(),
-            web_audio_api_rs::node::PannerOptions::default(),
-        );
+        let (mut panner, panner_node) =
+            panner_node_parts(&*ctx.0, web_audio_api_rs::node::PannerOptions::default());
         let destination = base.destination_audio_node();
 
         panner_node.connect_node(&destination, 0, 0).unwrap();
@@ -447,7 +439,7 @@ mod tests {
     fn periodic_wave_smoke_test() {
         let (ctx, base) = offline_context_parts(1, 128, 44_100.);
         let periodic_wave = PeriodicWave(web_audio_api_rs::PeriodicWave::new(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::PeriodicWaveOptions {
                 real: Some(vec![0.0, 0.0, 0.0]),
                 imag: Some(vec![0.0, 1.0, 0.5]),
@@ -455,7 +447,7 @@ mod tests {
             },
         ));
         let (osc, scheduled, osc_node) = oscillator_node_parts(
-            &*ctx.0.lock().unwrap(),
+            &*ctx.0,
             web_audio_api_rs::node::OscillatorOptions::default(),
         );
         let destination = base.destination_audio_node();

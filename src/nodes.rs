@@ -16,14 +16,14 @@ impl PeriodicWave {
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
             return Ok(Self(web_audio_api_rs::PeriodicWave::new(
-                &*ctx.0.lock().unwrap(),
+                ctx.0.as_ref(),
                 options,
             )));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
             return Ok(Self(web_audio_api_rs::PeriodicWave::new(
-                &*ctx.0.lock().unwrap(),
+                ctx.0.as_ref(),
                 options,
             )));
         }
@@ -1541,11 +1541,11 @@ impl AudioBufferSourceNode {
         let options = audio_buffer_source_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(audio_buffer_source_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(audio_buffer_source_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(audio_buffer_source_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(audio_buffer_source_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1765,11 +1765,11 @@ impl AnalyserNode {
         let options = analyser_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(analyser_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(analyser_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(analyser_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(analyser_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1864,11 +1864,11 @@ impl ConvolverNode {
         let options = convolver_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(convolver_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(convolver_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(convolver_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(convolver_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1922,11 +1922,11 @@ impl DynamicsCompressorNode {
         let options = dynamics_compressor_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(dynamics_compressor_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(dynamics_compressor_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(dynamics_compressor_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(dynamics_compressor_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1979,11 +1979,11 @@ impl GainNode {
         let options = gain_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(gain_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(gain_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(gain_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(gain_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -2011,11 +2011,11 @@ impl DelayNode {
         let options = delay_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(delay_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(delay_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(delay_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(delay_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -2043,11 +2043,11 @@ impl StereoPannerNode {
         let options = stereo_panner_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(stereo_panner_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(stereo_panner_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(stereo_panner_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(stereo_panner_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -2078,11 +2078,11 @@ impl ChannelMergerNode {
         let options = channel_merger_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(channel_merger_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(channel_merger_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(channel_merger_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(channel_merger_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -2108,11 +2108,11 @@ impl ChannelSplitterNode {
         let options = channel_splitter_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(channel_splitter_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(channel_splitter_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(channel_splitter_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(channel_splitter_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -2135,11 +2135,11 @@ impl BiquadFilterNode {
         let options = biquad_filter_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(biquad_filter_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(biquad_filter_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(biquad_filter_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(biquad_filter_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -2209,11 +2209,11 @@ impl IIRFilterNode {
         let options = iir_filter_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(iir_filter_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(iir_filter_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(iir_filter_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(iir_filter_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -2253,11 +2253,11 @@ impl WaveShaperNode {
         let options = wave_shaper_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(wave_shaper_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(wave_shaper_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(wave_shaper_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(wave_shaper_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -2307,11 +2307,11 @@ impl PannerNode {
         let options = panner_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(panner_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(panner_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(panner_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(panner_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -2446,11 +2446,11 @@ impl OscillatorNode {
         let options = oscillator_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(oscillator_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(oscillator_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(oscillator_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(oscillator_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -2504,11 +2504,11 @@ impl ConstantSourceNode {
         let options = constant_source_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(constant_source_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(constant_source_node(ctx.0.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
-            return Ok(constant_source_node(&*ctx.0.lock().unwrap(), options));
+            return Ok(constant_source_node(ctx.0.as_ref(), options));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(

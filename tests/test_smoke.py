@@ -1,9 +1,39 @@
+import asyncio
+import io
 import unittest
+import wave
 
 import web_audio_api
 
 
 class WebAudioApiSmokeTest(unittest.TestCase):
+    @staticmethod
+    def run_async(awaitable_factory):
+        async def runner():
+            awaitable = (
+                awaitable_factory() if callable(awaitable_factory) else awaitable_factory
+            )
+            return await awaitable
+
+        return asyncio.run(runner())
+
+    @staticmethod
+    def wav_bytes(samples, sample_rate=8_000):
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(
+                b"".join(
+                    int(max(-1.0, min(1.0, sample)) * 32767).to_bytes(
+                        2, "little", signed=True
+                    )
+                    for sample in samples
+                )
+            )
+        return buffer.getvalue()
+
     def test_audio_node_idl_surface_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         gain = web_audio_api.GainNode(ctx)
@@ -54,7 +84,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(offline_ctx.sampleRate, 44_100.0)
         self.assertGreaterEqual(audio_ctx.currentTime, 0.0)
         self.assertEqual(offline_ctx.currentTime, 0.0)
-        self.assertEqual(audio_ctx.state, "suspended")
+        self.assertIn(audio_ctx.state, ("suspended", "running"))
         self.assertEqual(offline_ctx.state, "suspended")
         self.assertEqual(offline_ctx.length, 128)
 
@@ -206,7 +236,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             calls.append(event)
 
         ctx.onstatechange = onstatechange
-        ctx.startRendering()
+        self.run_async(lambda: ctx.startRendering())
 
         self.assertGreaterEqual(len(calls), 1)
         self.assertTrue(all(isinstance(event, web_audio_api.Event) for event in calls))
@@ -233,7 +263,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             calls.append(event)
 
         ctx.oncomplete = oncomplete
-        rendered = ctx.startRendering()
+        rendered = self.run_async(lambda: ctx.startRendering())
 
         self.assertEqual(len(calls), 1)
         event = calls[0]
@@ -311,6 +341,16 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(calls[0].type, "sinkchange")
         self.assertIs(calls[0].target, ctx)
         self.assertIs(calls[0].currentTarget, ctx)
+
+    def test_audio_context_async_state_methods_work(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+
+        self.run_async(lambda: ctx.resume())
+        self.assertEqual(ctx.state, "running")
+        self.run_async(lambda: ctx.suspend())
+        self.assertEqual(ctx.state, "suspended")
+        self.run_async(lambda: ctx.close())
+        self.assertEqual(ctx.state, "closed")
 
     def test_create_script_processor_exists_on_contexts(self):
         realtime = web_audio_api.AudioContext({"sinkId": "none"})
@@ -656,7 +696,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         src.start(0.0)
         src.stop(0.25)
 
-        ctx.startRendering()
+        self.run_async(lambda: ctx.startRendering())
 
         self.assertEqual(len(calls), 1)
         self.assertIsInstance(calls[0], web_audio_api.Event)
@@ -713,7 +753,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         node.onaudioprocess = onaudioprocess
         node.connect(ctx.destination)
 
-        rendered = ctx.startRendering()
+        rendered = self.run_async(lambda: ctx.startRendering())
         data = rendered.getChannelData(0)
 
         self.assertEqual(len(events), 3)
@@ -746,7 +786,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         node.connect(ctx.destination)
         src.start()
 
-        rendered = ctx.startRendering()
+        rendered = self.run_async(lambda: ctx.startRendering())
         data = rendered.getChannelData(0)
 
         self.assertEqual(seen, [("audioprocess", True, True)] * 3)
@@ -761,7 +801,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         src.start(0.25)
         src.stop(0.75)
 
-        rendered = ctx.startRendering()
+        rendered = self.run_async(lambda: ctx.startRendering())
         data = rendered.getChannelData(0)
 
         self.assertEqual(rendered.numberOfChannels, 1)
@@ -816,7 +856,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         src.connect(ctx.destination)
         src.start()
 
-        data = ctx.startRendering().getChannelData(0)
+        data = self.run_async(lambda: ctx.startRendering()).getChannelData(0)
         self.assertTrue(all(sample == 0.125 for sample in data[:1000]))
         self.assertTrue(all(sample == 0.25 for sample in data[1000:]))
 
@@ -849,8 +889,73 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         gain.connect(ctx.destination)
         src.start()
 
-        data = ctx.startRendering().getChannelData(0)
+        data = self.run_async(lambda: ctx.startRendering()).getChannelData(0)
         self.assertTrue(all(sample == 0.125 for sample in data))
+
+    def test_offline_audio_context_async_suspend_resume_work(self):
+        async def exercise():
+            ctx = web_audio_api.OfflineAudioContext(1, 1024, 8_000.0)
+            src = ctx.createConstantSource()
+            src.connect(ctx.destination)
+            src.start()
+            suspend_task = ctx.suspend(0.05)
+            render_task = asyncio.ensure_future(ctx.startRendering())
+            await suspend_task
+            self.assertEqual(ctx.state, "suspended")
+            await ctx.resume()
+            rendered = await render_task
+            self.assertEqual(ctx.state, "closed")
+            return rendered
+
+        rendered = self.run_async(exercise())
+        self.assertEqual(rendered.length, 1024)
+
+    def test_base_audio_context_decode_audio_data_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
+        samples = [0.0, 0.5, -0.5, 0.25]
+
+        decoded = self.run_async(lambda: ctx.decodeAudioData(self.wav_bytes(samples)))
+
+        self.assertIsInstance(decoded, web_audio_api.AudioBuffer)
+        self.assertEqual(decoded.numberOfChannels, 1)
+        self.assertEqual(decoded.length, len(samples))
+
+    def test_base_audio_context_decode_audio_data_callbacks_work(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
+        success_calls = []
+        error_calls = []
+
+        def success_callback(buffer):
+            success_calls.append(buffer.length)
+
+        def error_callback(error):
+            error_calls.append(type(error).__name__)
+
+        decoded = self.run_async(
+            lambda: ctx.decodeAudioData(
+                self.wav_bytes([0.0, 0.25, -0.25]),
+                success_callback,
+                error_callback,
+            )
+        )
+
+        self.assertEqual(success_calls, [decoded.length])
+        self.assertEqual(error_calls, [])
+
+    def test_base_audio_context_decode_audio_data_error_callback_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
+        error_calls = []
+
+        def error_callback(error):
+            error_calls.append(error)
+
+        with self.assertRaises(RuntimeError):
+            self.run_async(
+                lambda: ctx.decodeAudioData(b"not audio data", None, error_callback)
+            )
+
+        self.assertEqual(len(error_calls), 1)
+        self.assertIsInstance(error_calls[0], RuntimeError)
 
     def test_delay_node_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)

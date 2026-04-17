@@ -10,4 +10,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.28.2", features = ["abi3-py311"] }
+pyo3-async-runtimes = { version = "0.28", features = ["attributes", "tokio-runtime"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 web-audio-api-rs = { version = "1.2.0", package = "web-audio-api" }

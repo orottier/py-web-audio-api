@@ -23,6 +23,87 @@ osc.connect(ctx.destination)
 osc.start()
 ```
 
+## Advanced usage
+
+The binding now exposes asyncio-native awaitables for the Web Audio methods that are async in
+`web-audio-api-rs`.
+
+This includes:
+
+- `AudioContext.resume()`
+- `AudioContext.suspend()`
+- `AudioContext.close()`
+- `OfflineAudioContext.startRendering()`
+- `OfflineAudioContext.resume()`
+- `OfflineAudioContext.suspend(suspendTime)`
+- `BaseAudioContext.decodeAudioData(...)`
+
+Use them inside a running event loop:
+
+```python
+import asyncio
+import web_audio_api
+
+
+async def main():
+    ctx = web_audio_api.AudioContext({"sinkId": "none"})
+    await ctx.resume()
+    await ctx.suspend()
+    await ctx.close()
+
+
+asyncio.run(main())
+```
+
+Offline rendering is also async:
+
+```python
+import asyncio
+import web_audio_api
+
+
+async def main():
+    ctx = web_audio_api.OfflineAudioContext(1, 2_000, 2_000.0)
+    src = ctx.createConstantSource()
+    src.offset.value = 0.25
+    src.connect(ctx.destination)
+    src.start(0.25)
+    src.stop(0.75)
+
+    rendered = await ctx.startRendering()
+    data = rendered.getChannelData(0)
+    print(data[:8])
+
+
+asyncio.run(main())
+```
+
+`decodeAudioData(...)` returns an awaitable and also accepts optional callbacks:
+
+```python
+import asyncio
+import pathlib
+import web_audio_api
+
+
+async def main():
+    ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+    audio_bytes = pathlib.Path("example.wav").read_bytes()
+
+    def success(buffer):
+        print(buffer.length, buffer.sampleRate)
+
+    buffer = await ctx.decodeAudioData(audio_bytes, successCallback=success)
+    print(buffer.numberOfChannels)
+
+
+asyncio.run(main())
+```
+
+One practical detail: create these awaitables inside the running loop. In other words, prefer
+`asyncio.run(main())` with the Web Audio calls inside `main()`, instead of constructing an
+awaitable earlier and awaiting it later.
+
 ## Local development
 
 Create and activate a virtual environment:

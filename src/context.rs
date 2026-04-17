@@ -1,8 +1,27 @@
 use super::*;
+use std::future::Future;
+use std::io::Cursor;
+use std::pin::Pin;
+
+fn async_runtime_error(message: impl Into<String>) -> PyErr {
+    pyo3::exceptions::PyRuntimeError::new_err(message.into())
+}
+
+fn async_boxed_error(err: Box<dyn std::error::Error + Send + Sync>) -> PyErr {
+    async_runtime_error(err.to_string())
+}
+
+fn into_py_future<'py, F, T>(py: Python<'py>, fut: F) -> PyResult<Bound<'py, PyAny>>
+where
+    F: Future<Output = PyResult<T>> + Send + 'static,
+    T: for<'py2> IntoPyObject<'py2> + Send + 'static,
+{
+    pyo3_async_runtimes::tokio::future_into_py(py, fut)
+}
 
 pub(crate) enum BaseAudioContextInner {
-    Realtime(Arc<Mutex<web_audio_api_rs::context::AudioContext>>),
-    Offline(Arc<Mutex<web_audio_api_rs::context::OfflineAudioContext>>),
+    Realtime(Arc<web_audio_api_rs::context::AudioContext>),
+    Offline(Arc<web_audio_api_rs::context::OfflineAudioContext>),
     Concrete(RsConcreteBaseAudioContext),
 }
 
@@ -35,8 +54,8 @@ impl BaseAudioContext {
     #[cfg(test)]
     pub(crate) fn destination_inner(&self) -> AudioDestinationNode {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => destination_node_parts(&*ctx.lock().unwrap()).0,
-            BaseAudioContextInner::Offline(ctx) => destination_node_parts(&*ctx.lock().unwrap()).0,
+            BaseAudioContextInner::Realtime(ctx) => destination_node_parts(ctx.as_ref()).0,
+            BaseAudioContextInner::Offline(ctx) => destination_node_parts(ctx.as_ref()).0,
             BaseAudioContextInner::Concrete(ctx) => destination_node_parts(ctx).0,
         }
     }
@@ -44,60 +63,56 @@ impl BaseAudioContext {
     #[cfg(test)]
     pub(crate) fn destination_audio_node(&self) -> AudioNode {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => destination_node_parts(&*ctx.lock().unwrap()).1,
-            BaseAudioContextInner::Offline(ctx) => destination_node_parts(&*ctx.lock().unwrap()).1,
+            BaseAudioContextInner::Realtime(ctx) => destination_node_parts(ctx.as_ref()).1,
+            BaseAudioContextInner::Offline(ctx) => destination_node_parts(ctx.as_ref()).1,
             BaseAudioContextInner::Concrete(ctx) => destination_node_parts(ctx).1,
         }
     }
 
     pub(crate) fn listener_inner(&self) -> AudioListener {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => AudioListener(ctx.lock().unwrap().listener()),
-            BaseAudioContextInner::Offline(ctx) => AudioListener(ctx.lock().unwrap().listener()),
+            BaseAudioContextInner::Realtime(ctx) => AudioListener(ctx.listener()),
+            BaseAudioContextInner::Offline(ctx) => AudioListener(ctx.listener()),
             BaseAudioContextInner::Concrete(ctx) => AudioListener(ctx.listener()),
         }
     }
 
     pub(crate) fn clear_onstatechange(&self) {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => ctx.lock().unwrap().clear_onstatechange(),
-            BaseAudioContextInner::Offline(ctx) => ctx.lock().unwrap().clear_onstatechange(),
+            BaseAudioContextInner::Realtime(ctx) => ctx.clear_onstatechange(),
+            BaseAudioContextInner::Offline(ctx) => ctx.clear_onstatechange(),
             BaseAudioContextInner::Concrete(ctx) => ctx.clear_onstatechange(),
         }
     }
 
     pub(crate) fn set_onstatechange_registry(&self, registry: Arc<Mutex<EventTargetRegistry>>) {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => {
-                ctx.lock().unwrap().set_onstatechange(move |_| {
-                    Python::attach(|py| {
-                        if let Err(err) = EventTarget::dispatch_from_registry(
-                            py,
-                            &registry,
-                            "statechange",
-                            None,
-                            None,
-                        ) {
-                            err.print(py);
-                        }
-                    });
-                })
-            }
-            BaseAudioContextInner::Offline(ctx) => {
-                ctx.lock().unwrap().set_onstatechange(move |_| {
-                    Python::attach(|py| {
-                        if let Err(err) = EventTarget::dispatch_from_registry(
-                            py,
-                            &registry,
-                            "statechange",
-                            None,
-                            None,
-                        ) {
-                            err.print(py);
-                        }
-                    });
-                })
-            }
+            BaseAudioContextInner::Realtime(ctx) => ctx.set_onstatechange(move |_| {
+                Python::attach(|py| {
+                    if let Err(err) = EventTarget::dispatch_from_registry(
+                        py,
+                        &registry,
+                        "statechange",
+                        None,
+                        None,
+                    ) {
+                        err.print(py);
+                    }
+                });
+            }),
+            BaseAudioContextInner::Offline(ctx) => ctx.set_onstatechange(move |_| {
+                Python::attach(|py| {
+                    if let Err(err) = EventTarget::dispatch_from_registry(
+                        py,
+                        &registry,
+                        "statechange",
+                        None,
+                        None,
+                    ) {
+                        err.print(py);
+                    }
+                });
+            }),
             BaseAudioContextInner::Concrete(ctx) => ctx.set_onstatechange(move |_| {
                 Python::attach(|py| {
                     if let Err(err) = EventTarget::dispatch_from_registry(
@@ -111,6 +126,41 @@ impl BaseAudioContext {
                     }
                 });
             }),
+        }
+    }
+}
+
+fn decode_audio_data_future(
+    inner: &BaseAudioContextInner,
+    audio_data: Vec<u8>,
+) -> Pin<Box<dyn Future<Output = PyResult<web_audio_api_rs::AudioBuffer>> + Send + 'static>> {
+    match inner {
+        BaseAudioContextInner::Realtime(ctx) => {
+            let ctx = Arc::clone(ctx);
+            Box::pin(async move {
+                let input = Cursor::new(audio_data);
+                ctx.decode_audio_data(input)
+                    .await
+                    .map_err(async_boxed_error)
+            })
+        }
+        BaseAudioContextInner::Offline(ctx) => {
+            let ctx = Arc::clone(ctx);
+            Box::pin(async move {
+                let input = Cursor::new(audio_data);
+                ctx.decode_audio_data(input)
+                    .await
+                    .map_err(async_boxed_error)
+            })
+        }
+        BaseAudioContextInner::Concrete(ctx) => {
+            let ctx = ctx.clone();
+            Box::pin(async move {
+                let input = Cursor::new(audio_data);
+                ctx.decode_audio_data(input)
+                    .await
+                    .map_err(async_boxed_error)
+            })
         }
     }
 }
@@ -261,11 +311,11 @@ fn offline_audio_context_options_from_dict(
 
 impl AudioContext {
     pub(crate) fn clear_onsinkchange(&self) {
-        self.0.lock().unwrap().clear_onsinkchange();
+        self.0.clear_onsinkchange();
     }
 
     pub(crate) fn set_onsinkchange_registry(&self, registry: Arc<Mutex<EventTargetRegistry>>) {
-        self.0.lock().unwrap().set_onsinkchange(move |_| {
+        self.0.set_onsinkchange(move |_| {
             Python::attach(|py| {
                 if let Err(err) =
                     EventTarget::dispatch_from_registry(py, &registry, "sinkchange", None, None)
@@ -297,8 +347,8 @@ impl BaseAudioContext {
     #[getter]
     pub(crate) fn destination(&self, py: Python<'_>) -> PyResult<Py<AudioDestinationNode>> {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => destination_node_py(py, &*ctx.lock().unwrap()),
-            BaseAudioContextInner::Offline(ctx) => destination_node_py(py, &*ctx.lock().unwrap()),
+            BaseAudioContextInner::Realtime(ctx) => destination_node_py(py, ctx.as_ref()),
+            BaseAudioContextInner::Offline(ctx) => destination_node_py(py, ctx.as_ref()),
             BaseAudioContextInner::Concrete(ctx) => destination_node_py(py, ctx),
         }
     }
@@ -311,8 +361,8 @@ impl BaseAudioContext {
     #[getter(sampleRate)]
     pub(crate) fn sample_rate(&self) -> f32 {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => ctx.lock().unwrap().sample_rate(),
-            BaseAudioContextInner::Offline(ctx) => ctx.lock().unwrap().sample_rate(),
+            BaseAudioContextInner::Realtime(ctx) => ctx.sample_rate(),
+            BaseAudioContextInner::Offline(ctx) => ctx.sample_rate(),
             BaseAudioContextInner::Concrete(ctx) => ctx.sample_rate(),
         }
     }
@@ -320,8 +370,8 @@ impl BaseAudioContext {
     #[getter(currentTime)]
     pub(crate) fn current_time(&self) -> f64 {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => ctx.lock().unwrap().current_time(),
-            BaseAudioContextInner::Offline(ctx) => ctx.lock().unwrap().current_time(),
+            BaseAudioContextInner::Realtime(ctx) => ctx.current_time(),
+            BaseAudioContextInner::Offline(ctx) => ctx.current_time(),
             BaseAudioContextInner::Concrete(ctx) => ctx.current_time(),
         }
     }
@@ -330,10 +380,10 @@ impl BaseAudioContext {
     pub(crate) fn state(&self) -> String {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => {
-                audio_context_state_to_str(ctx.lock().unwrap().state()).to_owned()
+                audio_context_state_to_str(ctx.state()).to_owned()
             }
             BaseAudioContextInner::Offline(ctx) => {
-                audio_context_state_to_str(ctx.lock().unwrap().state()).to_owned()
+                audio_context_state_to_str(ctx.state()).to_owned()
             }
             BaseAudioContextInner::Concrete(ctx) => {
                 audio_context_state_to_str(ctx.state()).to_owned()
@@ -349,16 +399,12 @@ impl BaseAudioContext {
         sample_rate: f32,
     ) -> AudioBuffer {
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => AudioBuffer::owned(
-                ctx.lock()
-                    .unwrap()
-                    .create_buffer(number_of_channels, length, sample_rate),
-            ),
-            BaseAudioContextInner::Offline(ctx) => AudioBuffer::owned(
-                ctx.lock()
-                    .unwrap()
-                    .create_buffer(number_of_channels, length, sample_rate),
-            ),
+            BaseAudioContextInner::Realtime(ctx) => {
+                AudioBuffer::owned(ctx.create_buffer(number_of_channels, length, sample_rate))
+            }
+            BaseAudioContextInner::Offline(ctx) => {
+                AudioBuffer::owned(ctx.create_buffer(number_of_channels, length, sample_rate))
+            }
             BaseAudioContextInner::Concrete(ctx) => {
                 AudioBuffer::owned(ctx.create_buffer(number_of_channels, length, sample_rate))
             }
@@ -370,12 +416,12 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => oscillator_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::OscillatorOptions::default(),
             ),
             BaseAudioContextInner::Offline(ctx) => oscillator_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::OscillatorOptions::default(),
             ),
             BaseAudioContextInner::Concrete(ctx) => oscillator_node_py(
@@ -394,12 +440,12 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => constant_source_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::ConstantSourceOptions::default(),
             ),
             BaseAudioContextInner::Offline(ctx) => constant_source_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::ConstantSourceOptions::default(),
             ),
             BaseAudioContextInner::Concrete(ctx) => constant_source_node_py(
@@ -418,12 +464,12 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => audio_buffer_source_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::AudioBufferSourceOptions::default(),
             ),
             BaseAudioContextInner::Offline(ctx) => audio_buffer_source_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::AudioBufferSourceOptions::default(),
             ),
             BaseAudioContextInner::Concrete(ctx) => audio_buffer_source_node_py(
@@ -439,12 +485,12 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => gain_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::GainOptions::default(),
             ),
             BaseAudioContextInner::Offline(ctx) => gain_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::GainOptions::default(),
             ),
             BaseAudioContextInner::Concrete(ctx) => {
@@ -466,12 +512,8 @@ impl BaseAudioContext {
             feedback,
         };
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => {
-                iir_filter_node_py(py, &*ctx.lock().unwrap(), options)
-            }
-            BaseAudioContextInner::Offline(ctx) => {
-                iir_filter_node_py(py, &*ctx.lock().unwrap(), options)
-            }
+            BaseAudioContextInner::Realtime(ctx) => iir_filter_node_py(py, ctx.as_ref(), options),
+            BaseAudioContextInner::Offline(ctx) => iir_filter_node_py(py, ctx.as_ref(), options),
             BaseAudioContextInner::Concrete(ctx) => iir_filter_node_py(py, ctx, options),
         }
     }
@@ -481,12 +523,12 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => panner_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::PannerOptions::default(),
             ),
             BaseAudioContextInner::Offline(ctx) => panner_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::PannerOptions::default(),
             ),
             BaseAudioContextInner::Concrete(ctx) => {
@@ -508,10 +550,10 @@ impl BaseAudioContext {
 
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => Ok(PeriodicWave(
-                web_audio_api_rs::PeriodicWave::new(&*ctx.lock().unwrap(), options),
+                web_audio_api_rs::PeriodicWave::new(ctx.as_ref(), options),
             )),
             BaseAudioContextInner::Offline(ctx) => Ok(PeriodicWave(
-                web_audio_api_rs::PeriodicWave::new(&*ctx.lock().unwrap(), options),
+                web_audio_api_rs::PeriodicWave::new(ctx.as_ref(), options),
             )),
             BaseAudioContextInner::Concrete(ctx) => Ok(PeriodicWave(
                 web_audio_api_rs::PeriodicWave::new(ctx, options),
@@ -537,10 +579,10 @@ impl BaseAudioContext {
         };
         catch_web_audio_panic_result(|| match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => {
-                script_processor_node_py(py, &*ctx.lock().unwrap(), options)
+                script_processor_node_py(py, ctx.as_ref(), options)
             }
             BaseAudioContextInner::Offline(ctx) => {
-                script_processor_node_py(py, &*ctx.lock().unwrap(), options)
+                script_processor_node_py(py, ctx.as_ref(), options)
             }
             BaseAudioContextInner::Concrete(ctx) => script_processor_node_py(py, ctx, options),
         })?
@@ -557,12 +599,8 @@ impl BaseAudioContext {
             ..Default::default()
         };
         match &self.inner {
-            BaseAudioContextInner::Realtime(ctx) => {
-                delay_node_py(py, &*ctx.lock().unwrap(), options)
-            }
-            BaseAudioContextInner::Offline(ctx) => {
-                delay_node_py(py, &*ctx.lock().unwrap(), options)
-            }
+            BaseAudioContextInner::Realtime(ctx) => delay_node_py(py, ctx.as_ref(), options),
+            BaseAudioContextInner::Offline(ctx) => delay_node_py(py, ctx.as_ref(), options),
             BaseAudioContextInner::Concrete(ctx) => delay_node_py(py, ctx, options),
         }
     }
@@ -572,12 +610,12 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => stereo_panner_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::StereoPannerOptions::default(),
             ),
             BaseAudioContextInner::Offline(ctx) => stereo_panner_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::StereoPannerOptions::default(),
             ),
             BaseAudioContextInner::Concrete(ctx) => stereo_panner_node_py(
@@ -593,12 +631,12 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => wave_shaper_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::WaveShaperOptions::default(),
             ),
             BaseAudioContextInner::Offline(ctx) => wave_shaper_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::WaveShaperOptions::default(),
             ),
             BaseAudioContextInner::Concrete(ctx) => wave_shaper_node_py(
@@ -621,10 +659,10 @@ impl BaseAudioContext {
         };
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => {
-                channel_merger_node_py(py, &*ctx.lock().unwrap(), options)
+                channel_merger_node_py(py, ctx.as_ref(), options)
             }
             BaseAudioContextInner::Offline(ctx) => {
-                channel_merger_node_py(py, &*ctx.lock().unwrap(), options)
+                channel_merger_node_py(py, ctx.as_ref(), options)
             }
             BaseAudioContextInner::Concrete(ctx) => channel_merger_node_py(py, ctx, options),
         }
@@ -642,10 +680,10 @@ impl BaseAudioContext {
         };
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => {
-                channel_splitter_node_py(py, &*ctx.lock().unwrap(), options)
+                channel_splitter_node_py(py, ctx.as_ref(), options)
             }
             BaseAudioContextInner::Offline(ctx) => {
-                channel_splitter_node_py(py, &*ctx.lock().unwrap(), options)
+                channel_splitter_node_py(py, ctx.as_ref(), options)
             }
             BaseAudioContextInner::Concrete(ctx) => channel_splitter_node_py(py, ctx, options),
         }
@@ -656,12 +694,12 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => biquad_filter_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::BiquadFilterOptions::default(),
             ),
             BaseAudioContextInner::Offline(ctx) => biquad_filter_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::BiquadFilterOptions::default(),
             ),
             BaseAudioContextInner::Concrete(ctx) => biquad_filter_node_py(
@@ -677,12 +715,12 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => analyser_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::AnalyserOptions::default(),
             ),
             BaseAudioContextInner::Offline(ctx) => analyser_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::AnalyserOptions::default(),
             ),
             BaseAudioContextInner::Concrete(ctx) => {
@@ -696,12 +734,12 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => convolver_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::ConvolverOptions::default(),
             ),
             BaseAudioContextInner::Offline(ctx) => convolver_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::ConvolverOptions::default(),
             ),
             BaseAudioContextInner::Concrete(ctx) => {
@@ -718,12 +756,12 @@ impl BaseAudioContext {
         match &self.inner {
             BaseAudioContextInner::Realtime(ctx) => dynamics_compressor_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::DynamicsCompressorOptions::default(),
             ),
             BaseAudioContextInner::Offline(ctx) => dynamics_compressor_node_py(
                 py,
-                &*ctx.lock().unwrap(),
+                ctx.as_ref(),
                 web_audio_api_rs::node::DynamicsCompressorOptions::default(),
             ),
             BaseAudioContextInner::Concrete(ctx) => dynamics_compressor_node_py(
@@ -733,10 +771,49 @@ impl BaseAudioContext {
             ),
         }
     }
+
+    #[pyo3(
+        name = "decodeAudioData",
+        signature = (audio_data, success_callback=None, error_callback=None)
+    )]
+    pub(crate) fn decode_audio_data<'py>(
+        &self,
+        py: Python<'py>,
+        audio_data: Vec<u8>,
+        success_callback: Option<Py<PyAny>>,
+        error_callback: Option<Py<PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let future = decode_audio_data_future(&self.inner, audio_data);
+
+        into_py_future(py, async move {
+            match future.await {
+                Ok(buffer) => {
+                    if let Some(callback) = success_callback {
+                        Python::attach(|py| {
+                            callback
+                                .bind(py)
+                                .call1((AudioBuffer::owned(buffer.clone()),))?;
+                            Ok::<(), PyErr>(())
+                        })?;
+                    }
+                    Ok(AudioBuffer::owned(buffer))
+                }
+                Err(err) => {
+                    if let Some(callback) = error_callback {
+                        Python::attach(|py| {
+                            callback.bind(py).call1((err.value(py),))?;
+                            Ok::<(), PyErr>(())
+                        })?;
+                    }
+                    Err(err)
+                }
+            }
+        })
+    }
 }
 
 #[pyclass(extends = BaseAudioContext)]
-pub(crate) struct AudioContext(pub(crate) Arc<Mutex<web_audio_api_rs::context::AudioContext>>);
+pub(crate) struct AudioContext(pub(crate) Arc<web_audio_api_rs::context::AudioContext>);
 
 #[pymethods]
 impl AudioContext {
@@ -747,17 +824,17 @@ impl AudioContext {
 
     #[getter(baseLatency)]
     pub(crate) fn base_latency(&self) -> f64 {
-        self.0.lock().unwrap().base_latency()
+        self.0.base_latency()
     }
 
     #[getter(outputLatency)]
     pub(crate) fn output_latency(&self) -> f64 {
-        self.0.lock().unwrap().output_latency()
+        self.0.output_latency()
     }
 
     #[getter(sinkId)]
     pub(crate) fn sink_id(&self) -> String {
-        self.0.lock().unwrap().sink_id()
+        self.0.sink_id()
     }
 
     #[setter]
@@ -772,12 +849,35 @@ impl AudioContext {
         slf.set_onsinkchange_registry(registry);
     }
 
+    pub(crate) fn resume<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let ctx = Arc::clone(&self.0);
+        into_py_future(py, async move {
+            ctx.resume().await;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn suspend<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let ctx = Arc::clone(&self.0);
+        into_py_future(py, async move {
+            ctx.suspend().await;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let ctx = Arc::clone(&self.0);
+        into_py_future(py, async move {
+            ctx.close().await;
+            Ok(())
+        })
+    }
+
     #[new]
     #[pyo3(signature = (options=None))]
     pub(crate) fn new(options: Option<&Bound<'_, PyAny>>) -> PyResult<PyClassInitializer<Self>> {
         let options = audio_context_options(options)?;
-        let ctx =
-            catch_web_audio_panic_result(|| Arc::new(Mutex::new(new_realtime_context(options))))?;
+        let ctx = catch_web_audio_panic_result(|| Arc::new(new_realtime_context(options)))?;
         Ok(PyClassInitializer::from(EventTarget::new())
             .add_subclass(BaseAudioContext::new(BaseAudioContextInner::Realtime(
                 Arc::clone(&ctx),
@@ -788,7 +888,7 @@ impl AudioContext {
 
 #[pyclass(extends = BaseAudioContext)]
 pub(crate) struct OfflineAudioContext(
-    pub(crate) Arc<Mutex<web_audio_api_rs::context::OfflineAudioContext>>,
+    pub(crate) Arc<web_audio_api_rs::context::OfflineAudioContext>,
 );
 
 #[pymethods]
@@ -806,8 +906,8 @@ impl OfflineAudioContext {
         slf.as_super()
             .as_super()
             .set_event_handler("complete", value);
-        slf.0.lock().unwrap().clear_oncomplete();
-        slf.0.lock().unwrap().set_oncomplete(move |event| {
+        slf.0.clear_oncomplete();
+        slf.0.set_oncomplete(move |event| {
             Python::attach(|py| {
                 match offline_audio_completion_event_py(py, &registry, event.rendered_buffer) {
                     Ok(event) => {
@@ -848,12 +948,10 @@ impl OfflineAudioContext {
             )
         };
 
-        let ctx = Arc::new(Mutex::new(
-            web_audio_api_rs::context::OfflineAudioContext::new(
-                number_of_channels,
-                length,
-                sample_rate,
-            ),
+        let ctx = Arc::new(web_audio_api_rs::context::OfflineAudioContext::new(
+            number_of_channels,
+            length,
+            sample_rate,
         ));
         Ok(PyClassInitializer::from(EventTarget::new())
             .add_subclass(BaseAudioContext::new(BaseAudioContextInner::Offline(
@@ -864,13 +962,34 @@ impl OfflineAudioContext {
 
     #[getter]
     pub(crate) fn length(&self) -> usize {
-        self.0.lock().unwrap().length()
+        self.0.length()
     }
 
     #[pyo3(name = "startRendering")]
-    pub(crate) fn start_rendering(&self) -> PyResult<AudioBuffer> {
-        catch_web_audio_panic_result(|| {
-            AudioBuffer::owned(self.0.lock().unwrap().start_rendering_sync())
+    pub(crate) fn start_rendering<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let ctx = Arc::clone(&self.0);
+        into_py_future(py, async move {
+            Ok(AudioBuffer::owned(ctx.start_rendering().await))
+        })
+    }
+
+    pub(crate) fn resume<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let ctx = Arc::clone(&self.0);
+        into_py_future(py, async move {
+            ctx.resume().await;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn suspend<'py>(
+        &self,
+        py: Python<'py>,
+        suspend_time: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let ctx = Arc::clone(&self.0);
+        into_py_future(py, async move {
+            ctx.suspend(suspend_time).await;
+            Ok(())
         })
     }
 }
