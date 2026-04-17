@@ -90,6 +90,8 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BaseAudioContext>()?;
     m.add_class::<AudioContext>()?;
     m.add_class::<OfflineAudioContext>()?;
+    m.add_class::<AudioRenderCapacity>()?;
+    m.add_class::<AudioRenderCapacityEvent>()?;
     m.add_class::<OfflineAudioCompletionEvent>()?;
     m.add_class::<AudioProcessingEvent>()?;
     m.add_class::<AudioBuffer>()?;
@@ -162,7 +164,10 @@ mod tests {
     fn audio_context_parts() -> (AudioContext, BaseAudioContext) {
         let ctx = Arc::new(new_realtime_context(silent_audio_context_options()));
         (
-            AudioContext(Arc::clone(&ctx)),
+            AudioContext(
+                Arc::clone(&ctx),
+                Arc::new(Mutex::new(EventTargetRegistry::default())),
+            ),
             BaseAudioContext::new(BaseAudioContextInner::Realtime(ctx)),
         )
     }
@@ -295,6 +300,29 @@ mod tests {
         assert_eq!(node.number_of_outputs().unwrap(), 1);
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn audio_render_capacity_smoke_test() {
+        let (ctx, _) = audio_context_parts();
+        let render_capacity = ctx.0.render_capacity();
+        let (send, recv) = mpsc::channel();
+
+        render_capacity.set_onupdate(move |event| {
+            let _ = send.send((event.timestamp, event.average_load, event.peak_load));
+        });
+        render_capacity.start(web_audio_api_rs::AudioRenderCapacityOptions {
+            update_interval: 0.05,
+        });
+        ctx.0.resume_sync();
+
+        let event = recv.recv_timeout(Duration::from_secs(1)).unwrap();
+        render_capacity.stop();
+        ctx.0.close_sync();
+
+        assert!(event.0 >= 0.0);
+        assert!(event.1 >= 0.0);
+        assert!(event.2 >= 0.0);
     }
 
     #[test]

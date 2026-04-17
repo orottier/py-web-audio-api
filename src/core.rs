@@ -72,6 +72,10 @@ impl EventTarget {
         }
     }
 
+    pub(crate) fn from_registry(registry: Arc<Mutex<EventTargetRegistry>>) -> Self {
+        Self { registry }
+    }
+
     pub(crate) fn registry(&self) -> Arc<Mutex<EventTargetRegistry>> {
         Arc::clone(&self.registry)
     }

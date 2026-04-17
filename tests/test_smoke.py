@@ -368,6 +368,39 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.run_async(lambda: ctx.close())
         self.assertEqual(ctx.state, "closed")
 
+    def test_audio_render_capacity_surface_is_wired(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        render_capacity = ctx.renderCapacity
+
+        self.assertIsInstance(render_capacity, web_audio_api.AudioRenderCapacity)
+        self.assertIsInstance(render_capacity, web_audio_api.EventTarget)
+
+        updates = []
+        update_event = threading.Event()
+
+        def on_update(event):
+            updates.append(event)
+            update_event.set()
+
+        render_capacity.onupdate = on_update
+        render_capacity.start({"updateInterval": 0.05})
+        self.run_async(lambda: ctx.resume())
+
+        self.assertTrue(update_event.wait(1.0))
+
+        event = updates[0]
+        self.assertIsInstance(event, web_audio_api.AudioRenderCapacityEvent)
+        self.assertEqual(event.type, "update")
+        self.assertIs(event.target, render_capacity)
+        self.assertIs(event.currentTarget, render_capacity)
+        self.assertGreaterEqual(event.timestamp, 0.0)
+        self.assertGreaterEqual(event.averageLoad, 0.0)
+        self.assertGreaterEqual(event.peakLoad, 0.0)
+        self.assertGreaterEqual(event.underrunRatio, 0.0)
+
+        render_capacity.stop()
+        self.run_async(lambda: ctx.close())
+
     def test_create_script_processor_exists_on_contexts(self):
         realtime = web_audio_api.AudioContext({"sinkId": "none"})
         offline = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)

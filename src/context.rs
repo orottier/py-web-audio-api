@@ -33,11 +33,110 @@ pub(crate) struct OfflineAudioCompletionEvent {
     rendered_buffer: web_audio_api_rs::AudioBuffer,
 }
 
+#[pyclass(extends = Event)]
+pub(crate) struct AudioRenderCapacityEvent {
+    timestamp: f64,
+    average_load: f64,
+    peak_load: f64,
+    underrun_ratio: f64,
+}
+
+#[pymethods]
+impl AudioRenderCapacityEvent {
+    #[getter]
+    pub(crate) fn timestamp(&self) -> f64 {
+        self.timestamp
+    }
+
+    #[getter(averageLoad)]
+    pub(crate) fn average_load(&self) -> f64 {
+        self.average_load
+    }
+
+    #[getter(peakLoad)]
+    pub(crate) fn peak_load(&self) -> f64 {
+        self.peak_load
+    }
+
+    #[getter(underrunRatio)]
+    pub(crate) fn underrun_ratio(&self) -> f64 {
+        self.underrun_ratio
+    }
+}
+
 #[pymethods]
 impl OfflineAudioCompletionEvent {
     #[getter(renderedBuffer)]
     pub(crate) fn rendered_buffer(&self) -> AudioBuffer {
         AudioBuffer::owned(self.rendered_buffer.clone())
+    }
+}
+
+#[pyclass(extends = EventTarget)]
+pub(crate) struct AudioRenderCapacity {
+    inner: Arc<web_audio_api_rs::AudioRenderCapacity>,
+}
+
+fn audio_render_capacity_event_py(
+    py: Python<'_>,
+    registry: &Arc<Mutex<EventTargetRegistry>>,
+    event: web_audio_api_rs::AudioRenderCapacityEvent,
+) -> PyResult<Py<PyAny>> {
+    let owner = EventTarget::owner_for_registry(py, registry);
+    let event = Py::new(
+        py,
+        PyClassInitializer::from(Event::new_dispatched(
+            "update",
+            owner.as_ref().map(|owner| owner.clone_ref(py)),
+            owner,
+        ))
+        .add_subclass(AudioRenderCapacityEvent {
+            timestamp: event.timestamp,
+            average_load: event.average_load,
+            peak_load: event.peak_load,
+            underrun_ratio: event.underrun_ratio,
+        }),
+    )?;
+    Ok(event.into_any())
+}
+
+fn audio_render_capacity_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::AudioRenderCapacityOptions> {
+    let mut parsed = web_audio_api_rs::AudioRenderCapacityOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    let options = options.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err("AudioRenderCapacityOptions must be a dict")
+    })?;
+    if let Some(update_interval) = options.get_item("updateInterval")? {
+        parsed.update_interval = update_interval.extract()?;
+    }
+    Ok(parsed)
+}
+
+impl AudioRenderCapacity {
+    fn clear_onupdate(&self) {
+        self.inner.clear_onupdate();
+    }
+
+    fn set_onupdate_registry(&self, registry: Arc<Mutex<EventTargetRegistry>>) {
+        self.inner.set_onupdate(move |event| {
+            Python::attach(
+                |py| match audio_render_capacity_event_py(py, &registry, event) {
+                    Ok(event) => {
+                        if let Err(err) =
+                            EventTarget::dispatch_event_object(py, &registry, "update", event)
+                        {
+                            err.print(py);
+                        }
+                    }
+                    Err(err) => err.print(py),
+                },
+            );
+        });
     }
 }
 
@@ -838,10 +937,25 @@ impl BaseAudioContext {
 }
 
 #[pyclass(extends = BaseAudioContext)]
-pub(crate) struct AudioContext(pub(crate) Arc<web_audio_api_rs::context::AudioContext>);
+pub(crate) struct AudioContext(
+    pub(crate) Arc<web_audio_api_rs::context::AudioContext>,
+    pub(crate) Arc<Mutex<EventTargetRegistry>>,
+);
 
 #[pymethods]
 impl AudioContext {
+    #[getter(renderCapacity)]
+    pub(crate) fn render_capacity(&self, py: Python<'_>) -> PyResult<Py<AudioRenderCapacity>> {
+        Py::new(
+            py,
+            PyClassInitializer::from(EventTarget::from_registry(Arc::clone(&self.1))).add_subclass(
+                AudioRenderCapacity {
+                    inner: Arc::new(self.0.render_capacity()),
+                },
+            ),
+        )
+    }
+
     #[getter]
     pub(crate) fn onsinkchange(slf: PyRef<'_, Self>, py: Python<'_>) -> Py<PyAny> {
         slf.as_super().as_super().event_handler(py, "sinkchange")
@@ -938,11 +1052,12 @@ impl AudioContext {
     pub(crate) fn new(options: Option<&Bound<'_, PyAny>>) -> PyResult<PyClassInitializer<Self>> {
         let options = audio_context_options(options)?;
         let ctx = catch_web_audio_panic_result(|| Arc::new(new_realtime_context(options)))?;
+        let render_capacity_registry = Arc::new(Mutex::new(EventTargetRegistry::default()));
         Ok(PyClassInitializer::from(EventTarget::new())
             .add_subclass(BaseAudioContext::new(BaseAudioContextInner::Realtime(
                 Arc::clone(&ctx),
             )))
-            .add_subclass(Self(ctx)))
+            .add_subclass(Self(ctx, render_capacity_registry)))
     }
 }
 
@@ -950,6 +1065,35 @@ impl AudioContext {
 pub(crate) struct OfflineAudioContext(
     pub(crate) Arc<web_audio_api_rs::context::OfflineAudioContext>,
 );
+
+#[pymethods]
+impl AudioRenderCapacity {
+    #[getter]
+    pub(crate) fn onupdate(slf: PyRef<'_, Self>, py: Python<'_>) -> Py<PyAny> {
+        slf.as_super().event_handler(py, "update")
+    }
+
+    #[setter]
+    pub(crate) fn set_onupdate(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let owner = EventTarget::owner_from_ptr(slf.py(), slf.as_ptr());
+        slf.as_super().set_owner(owner);
+        let registry = slf.as_super().registry();
+        slf.as_super().set_event_handler("update", value);
+        slf.clear_onupdate();
+        slf.set_onupdate_registry(registry);
+    }
+
+    #[pyo3(signature = (options=None))]
+    pub(crate) fn start(&self, options: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+        let options = audio_render_capacity_options(options)?;
+        self.inner.start(options);
+        Ok(())
+    }
+
+    pub(crate) fn stop(&self) {
+        self.inner.stop();
+    }
+}
 
 #[pymethods]
 impl OfflineAudioContext {
