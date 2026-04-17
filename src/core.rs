@@ -10,7 +10,7 @@ pub(crate) struct EventTargetRegistry {
     listeners: HashMap<String, Vec<Py<PyAny>>>,
 }
 
-#[pyclass]
+#[pyclass(subclass)]
 pub(crate) struct Event {
     type_: String,
     target: Option<Py<PyAny>>,
@@ -103,6 +103,52 @@ impl EventTarget {
         unsafe { Bound::<PyAny>::from_borrowed_ptr(py, ptr) }.unbind()
     }
 
+    pub(crate) fn callbacks_for_event(
+        py: Python<'_>,
+        registry: &Arc<Mutex<EventTargetRegistry>>,
+        type_: &str,
+    ) -> (Option<Py<PyAny>>, Vec<Py<PyAny>>) {
+        let registry = registry.lock().unwrap();
+        let handler = registry.handlers.get(type_).map(|h| h.clone_ref(py));
+        let listeners: Vec<Py<PyAny>> = registry
+            .listeners
+            .get(type_)
+            .map(|listeners| listeners.iter().map(|l| l.clone_ref(py)).collect())
+            .unwrap_or_default();
+        (handler, listeners)
+    }
+
+    pub(crate) fn owner_for_registry(
+        py: Python<'_>,
+        registry: &Arc<Mutex<EventTargetRegistry>>,
+    ) -> Option<Py<PyAny>> {
+        registry
+            .lock()
+            .unwrap()
+            .owner
+            .as_ref()
+            .map(|owner| owner.clone_ref(py))
+    }
+
+    pub(crate) fn dispatch_event_object(
+        py: Python<'_>,
+        registry: &Arc<Mutex<EventTargetRegistry>>,
+        type_: &str,
+        event: Py<PyAny>,
+    ) -> PyResult<()> {
+        let (handler, listeners) = Self::callbacks_for_event(py, registry, type_);
+
+        if let Some(handler) = handler {
+            handler.bind(py).call1((event.clone_ref(py),))?;
+        }
+
+        for listener in listeners {
+            listener.bind(py).call1((event.clone_ref(py),))?;
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn dispatch_from_registry(
         py: Python<'_>,
         registry: &Arc<Mutex<EventTargetRegistry>>,
@@ -110,17 +156,7 @@ impl EventTarget {
         target: Option<Py<PyAny>>,
         current_target: Option<Py<PyAny>>,
     ) -> PyResult<()> {
-        let (owner, handler, listeners) = {
-            let registry = registry.lock().unwrap();
-            let owner = registry.owner.as_ref().map(|owner| owner.clone_ref(py));
-            let handler = registry.handlers.get(type_).map(|h| h.clone_ref(py));
-            let listeners: Vec<Py<PyAny>> = registry
-                .listeners
-                .get(type_)
-                .map(|listeners| listeners.iter().map(|l| l.clone_ref(py)).collect())
-                .unwrap_or_default();
-            (owner, handler, listeners)
-        };
+        let owner = Self::owner_for_registry(py, registry);
 
         let target = target
             .as_ref()
@@ -132,16 +168,7 @@ impl EventTarget {
             .or_else(|| owner.as_ref().map(|owner| owner.clone_ref(py)));
 
         let event = Py::new(py, Event::new_dispatched(type_, target, current_target))?;
-
-        if let Some(handler) = handler {
-            handler.bind(py).call1((event.clone_ref(py),))?;
-        }
-
-        for listener in listeners {
-            listener.bind(py).call1((event.clone_ref(py),))?;
-        }
-
-        Ok(())
+        Self::dispatch_event_object(py, registry, type_, event.into_any())
     }
 }
 

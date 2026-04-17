@@ -9,6 +9,19 @@ pub(crate) enum BaseAudioContextInner {
 #[pyclass]
 pub(crate) struct AudioListener(pub(crate) web_audio_api_rs::AudioListener);
 
+#[pyclass(extends = Event)]
+pub(crate) struct OfflineAudioCompletionEvent {
+    rendered_buffer: AudioBuffer,
+}
+
+#[pymethods]
+impl OfflineAudioCompletionEvent {
+    #[getter(renderedBuffer)]
+    pub(crate) fn rendered_buffer(&self) -> AudioBuffer {
+        AudioBuffer(self.rendered_buffer.0.clone())
+    }
+}
+
 #[pyclass(extends = EventTarget, subclass)]
 pub(crate) struct BaseAudioContext {
     inner: BaseAudioContextInner,
@@ -100,6 +113,26 @@ impl BaseAudioContext {
             }),
         }
     }
+}
+
+fn offline_audio_completion_event_py(
+    py: Python<'_>,
+    registry: &Arc<Mutex<EventTargetRegistry>>,
+    rendered_buffer: web_audio_api_rs::AudioBuffer,
+) -> PyResult<Py<PyAny>> {
+    let owner = EventTarget::owner_for_registry(py, registry);
+    let event = Py::new(
+        py,
+        PyClassInitializer::from(Event::new_dispatched(
+            "complete",
+            owner.as_ref().map(|owner| owner.clone_ref(py)),
+            owner,
+        ))
+        .add_subclass(OfflineAudioCompletionEvent {
+            rendered_buffer: AudioBuffer(rendered_buffer),
+        }),
+    )?;
+    Ok(event.into_any())
 }
 
 pub(crate) fn new_realtime_context(
@@ -607,6 +640,36 @@ pub(crate) struct OfflineAudioContext(
 
 #[pymethods]
 impl OfflineAudioContext {
+    #[getter]
+    pub(crate) fn oncomplete(slf: PyRef<'_, Self>, py: Python<'_>) -> Py<PyAny> {
+        slf.as_super().as_super().event_handler(py, "complete")
+    }
+
+    #[setter]
+    pub(crate) fn set_oncomplete(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let owner = EventTarget::owner_from_ptr(slf.py(), slf.as_ptr());
+        slf.as_super().as_super().set_owner(owner);
+        let registry = slf.as_super().as_super().registry();
+        slf.as_super()
+            .as_super()
+            .set_event_handler("complete", value);
+        slf.0.lock().unwrap().clear_oncomplete();
+        slf.0.lock().unwrap().set_oncomplete(move |event| {
+            Python::attach(|py| {
+                match offline_audio_completion_event_py(py, &registry, event.rendered_buffer) {
+                    Ok(event) => {
+                        if let Err(err) =
+                            EventTarget::dispatch_event_object(py, &registry, "complete", event)
+                        {
+                            err.print(py);
+                        }
+                    }
+                    Err(err) => err.print(py),
+                }
+            });
+        });
+    }
+
     #[new]
     pub(crate) fn new(
         number_of_channels: usize,

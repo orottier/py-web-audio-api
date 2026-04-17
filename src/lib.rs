@@ -29,6 +29,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BaseAudioContext>()?;
     m.add_class::<AudioContext>()?;
     m.add_class::<OfflineAudioContext>()?;
+    m.add_class::<OfflineAudioCompletionEvent>()?;
     m.add_class::<AudioBuffer>()?;
     m.add_class::<PeriodicWave>()?;
     m.add_class::<AudioListener>()?;

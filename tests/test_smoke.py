@@ -196,6 +196,36 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertTrue(all(event.target is ctx for event in calls))
         self.assertTrue(all(event.currentTarget is ctx for event in calls))
 
+    def test_offline_audio_context_oncomplete_property_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        marker = object()
+
+        self.assertIsNone(ctx.oncomplete)
+        ctx.oncomplete = marker
+        self.assertIs(ctx.oncomplete, marker)
+        ctx.oncomplete = None
+        self.assertIsNone(ctx.oncomplete)
+
+    def test_offline_audio_context_oncomplete_callback_fires(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 256, 8_000.0)
+        calls = []
+
+        def oncomplete(event):
+            calls.append(event)
+
+        ctx.oncomplete = oncomplete
+        rendered = ctx.startRendering()
+
+        self.assertEqual(len(calls), 1)
+        event = calls[0]
+        self.assertIsInstance(event, web_audio_api.OfflineAudioCompletionEvent)
+        self.assertEqual(event.type, "complete")
+        self.assertIs(event.target, ctx)
+        self.assertIs(event.currentTarget, ctx)
+        self.assertIsInstance(event.renderedBuffer, web_audio_api.AudioBuffer)
+        self.assertEqual(event.renderedBuffer.length, rendered.length)
+        self.assertEqual(event.renderedBuffer.sampleRate, rendered.sampleRate)
+
     def test_base_audio_context_manual_dispatch_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
         calls = []
