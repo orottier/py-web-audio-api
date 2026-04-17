@@ -23,6 +23,15 @@ use core::*;
 use data::*;
 use nodes::*;
 
+#[pyfunction(name = "getUserMediaSync", signature = (constraints=None))]
+fn get_user_media_sync(constraints: Option<&Bound<'_, PyAny>>) -> PyResult<MediaStream> {
+    let constraints = media_stream_constraints(constraints)?;
+    let stream = catch_web_audio_panic_result(|| {
+        web_audio_api_rs::media_devices::get_user_media_sync(constraints)
+    })?;
+    Ok(MediaStream(stream))
+}
+
 /// A Python module implemented in Rust.
 #[pymodule]
 fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -32,6 +41,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<OfflineAudioCompletionEvent>()?;
     m.add_class::<AudioProcessingEvent>()?;
     m.add_class::<AudioBuffer>()?;
+    m.add_class::<MediaStream>()?;
     m.add_class::<PeriodicWave>()?;
     m.add_class::<AudioListener>()?;
     m.add_class::<Event>()?;
@@ -53,9 +63,11 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<WaveShaperNode>()?;
     m.add_class::<PannerNode>()?;
     m.add_class::<ScriptProcessorNode>()?;
+    m.add_class::<MediaStreamAudioSourceNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
+    m.add_function(wrap_pyfunction!(get_user_media_sync, m)?)?;
     Ok(())
 }
 
@@ -110,6 +122,25 @@ mod tests {
 
         let _ = realtime.destination_inner();
         let _ = offline.destination_inner();
+    }
+
+    #[test]
+    fn media_stream_audio_source_graph_smoke_test() {
+        let (ctx, _) = audio_context_parts();
+        let buffer = web_audio_api_rs::AudioBuffer::new(web_audio_api_rs::AudioBufferOptions {
+            number_of_channels: 1,
+            length: 128,
+            sample_rate: 44_100.,
+        });
+        let track = web_audio_api_rs::media_streams::MediaStreamTrack::from_iter(vec![
+            Ok(buffer.clone()),
+            Ok(buffer),
+        ]);
+        let stream = web_audio_api_rs::media_streams::MediaStream::from_tracks(vec![track]);
+        let (_src, node) = media_stream_audio_source_node_parts(&ctx.0, &stream);
+
+        assert_eq!(node.number_of_inputs().unwrap(), 0);
+        assert_eq!(node.number_of_outputs().unwrap(), 1);
     }
 
     #[test]

@@ -259,6 +259,39 @@ pub(crate) fn audio_buffer_source_node_py(
 }
 
 #[cfg(test)]
+pub(crate) fn media_stream_audio_source_node_parts(
+    ctx: &web_audio_api_rs::context::AudioContext,
+    media_stream: &web_audio_api_rs::media_streams::MediaStream,
+) -> (MediaStreamAudioSourceNode, AudioNode) {
+    wrap_audio_node(
+        ctx.create_media_stream_source(media_stream),
+        MediaStreamAudioSourceNode,
+    )
+}
+
+pub(crate) fn media_stream_audio_source_node(
+    ctx: &web_audio_api_rs::context::AudioContext,
+    media_stream: &web_audio_api_rs::media_streams::MediaStream,
+) -> PyClassInitializer<MediaStreamAudioSourceNode> {
+    init_audio_node(
+        ctx.create_media_stream_source(media_stream),
+        MediaStreamAudioSourceNode,
+    )
+}
+
+pub(crate) fn media_stream_audio_source_node_py(
+    py: Python<'_>,
+    ctx: &web_audio_api_rs::context::AudioContext,
+    media_stream: &web_audio_api_rs::media_streams::MediaStream,
+) -> PyResult<Py<MediaStreamAudioSourceNode>> {
+    new_audio_node_py(
+        py,
+        ctx.create_media_stream_source(media_stream),
+        MediaStreamAudioSourceNode,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn analyser_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AnalyserOptions,
@@ -1530,6 +1563,11 @@ pub(crate) struct AudioBufferSourceNode(
     pub(crate) Arc<Mutex<web_audio_api_rs::node::AudioBufferSourceNode>>,
 );
 
+#[pyclass(extends = AudioNode)]
+pub(crate) struct MediaStreamAudioSourceNode(
+    pub(crate) Arc<Mutex<web_audio_api_rs::node::MediaStreamAudioSourceNode>>,
+);
+
 #[pymethods]
 impl AudioBufferSourceNode {
     #[new]
@@ -1632,6 +1670,32 @@ impl AudioBufferSourceNode {
                 node.start_at_with_offset(when, offset);
             }
         })
+    }
+}
+
+#[pymethods]
+impl MediaStreamAudioSourceNode {
+    #[new]
+    pub(crate) fn new(
+        ctx: PyRef<'_, AudioContext>,
+        options: &Bound<'_, PyAny>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = options.cast::<PyDict>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("MediaStreamAudioSourceOptions must be a dict")
+        })?;
+        let media_stream = options
+            .get_item("mediaStream")?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyTypeError::new_err(
+                    "MediaStreamAudioSourceOptions.mediaStream is required",
+                )
+            })?
+            .extract::<PyRef<'_, MediaStream>>()?;
+
+        Ok(media_stream_audio_source_node(
+            ctx.0.as_ref(),
+            &media_stream.0,
+        ))
     }
 }
 

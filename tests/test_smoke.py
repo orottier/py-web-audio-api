@@ -364,6 +364,24 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(realtime_node.bufferSize, 256)
         self.assertEqual(offline_node.bufferSize, 256)
 
+    def test_media_stream_is_not_constructible(self):
+        with self.assertRaises(TypeError):
+            web_audio_api.MediaStream()
+
+    def test_get_user_media_sync_entrypoint_is_wired(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+
+        try:
+            stream = web_audio_api.getUserMediaSync()
+        except RuntimeError as exc:
+            self.assertNotIsInstance(exc, TypeError)
+        else:
+            self.assertIsInstance(stream, web_audio_api.MediaStream)
+            node = ctx.createMediaStreamSource(stream)
+            self.assertIsInstance(node, web_audio_api.MediaStreamAudioSourceNode)
+            self.assertIsInstance(node, web_audio_api.AudioNode)
+            stream.close()
+
     def test_create_script_processor_passes_zero_buffer_size_through(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
 

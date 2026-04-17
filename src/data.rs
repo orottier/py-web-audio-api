@@ -1,5 +1,19 @@
 use super::*;
 
+#[pyclass(skip_from_py_object)]
+#[derive(Clone)]
+pub(crate) struct MediaStream(pub(crate) web_audio_api_rs::media_streams::MediaStream);
+
+#[pymethods]
+impl MediaStream {
+    #[pyo3(name = "close")]
+    pub(crate) fn close(&self) {
+        for track in self.0.get_tracks() {
+            track.close();
+        }
+    }
+}
+
 pub(crate) enum AudioBufferInner {
     Owned(web_audio_api_rs::AudioBuffer),
     AudioProcessing {
@@ -215,4 +229,66 @@ pub(crate) fn audio_buffer_options(
         length,
         sample_rate,
     })
+}
+
+pub(crate) fn media_stream_constraints(
+    constraints: Option<&Bound<'_, PyAny>>,
+) -> PyResult<web_audio_api_rs::media_devices::MediaStreamConstraints> {
+    let Some(constraints) = constraints else {
+        return Ok(web_audio_api_rs::media_devices::MediaStreamConstraints::Audio);
+    };
+
+    if let Ok(enabled) = constraints.extract::<bool>() {
+        if enabled {
+            return Ok(web_audio_api_rs::media_devices::MediaStreamConstraints::Audio);
+        }
+
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "getUserMediaSync(False) is not supported; pass True, None, or a constraints dict",
+        ));
+    }
+
+    let constraints = constraints.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err(
+            "getUserMediaSync constraints must be a bool or dict",
+        )
+    })?;
+
+    let Some(audio) = constraints.get_item("audio")? else {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "getUserMediaSync constraints must include an 'audio' entry",
+        ));
+    };
+
+    if let Ok(enabled) = audio.extract::<bool>() {
+        if enabled {
+            return Ok(web_audio_api_rs::media_devices::MediaStreamConstraints::Audio);
+        }
+
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "getUserMediaSync({'audio': False}) is not supported",
+        ));
+    }
+
+    let audio = audio.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err(
+            "getUserMediaSync audio constraints must be True or a dict",
+        )
+    })?;
+
+    let mut parsed = web_audio_api_rs::media_devices::MediaTrackConstraints::default();
+    if let Some(sample_rate) = audio.get_item("sampleRate")? {
+        parsed.sample_rate = Some(sample_rate.extract()?);
+    }
+    if let Some(latency) = audio.get_item("latency")? {
+        parsed.latency = Some(latency.extract()?);
+    }
+    if let Some(channel_count) = audio.get_item("channelCount")? {
+        parsed.channel_count = Some(channel_count.extract()?);
+    }
+    if let Some(device_id) = audio.get_item("deviceId")? {
+        parsed.device_id = Some(device_id.extract()?);
+    }
+
+    Ok(web_audio_api_rs::media_devices::MediaStreamConstraints::AudioWithConstraints(parsed))
 }

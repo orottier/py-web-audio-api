@@ -873,6 +873,15 @@ impl AudioContext {
         })
     }
 
+    #[pyo3(name = "createMediaStreamSource")]
+    pub(crate) fn create_media_stream_source(
+        &self,
+        py: Python<'_>,
+        media_stream: PyRef<'_, MediaStream>,
+    ) -> PyResult<Py<MediaStreamAudioSourceNode>> {
+        media_stream_audio_source_node_py(py, self.0.as_ref(), &media_stream.0)
+    }
+
     #[new]
     #[pyo3(signature = (options=None))]
     pub(crate) fn new(options: Option<&Bound<'_, PyAny>>) -> PyResult<PyClassInitializer<Self>> {
