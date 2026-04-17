@@ -505,6 +505,24 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         osc.onended = None
         self.assertIsNone(osc.onended)
 
+    def test_audio_scheduled_source_node_onended_callback_fires(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)
+        src = web_audio_api.ConstantSourceNode(ctx)
+        calls = []
+
+        def onended(event):
+            calls.append(event)
+
+        src.onended = onended
+        src.connect(ctx.destination)
+        src.start(0.0)
+        src.stop(0.25)
+
+        ctx.startRendering()
+
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(calls[0])
+
     def test_constant_source_renders_scheduled_samples_offline(self):
         ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)
         src = web_audio_api.ConstantSourceNode(ctx, {"offset": 0.25})

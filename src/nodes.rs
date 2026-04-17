@@ -96,6 +96,33 @@ impl ScheduledSourceInner {
             }
         }
     }
+
+    pub(crate) fn clear_onended(&self) {
+        match self {
+            Self::AudioBufferSource(node) => node.lock().unwrap().clear_onended(),
+            Self::Oscillator(node) => node.lock().unwrap().clear_onended(),
+            Self::ConstantSource(node) => node.lock().unwrap().clear_onended(),
+        }
+    }
+
+    pub(crate) fn set_onended(&self, callback: Py<PyAny>) {
+        let callback = move || {
+            Python::attach(|py| {
+                let callback = callback.bind(py);
+                if callback.is_callable() {
+                    if let Err(err) = callback.call1((py.None(),)) {
+                        err.print(py);
+                    }
+                }
+            });
+        };
+
+        match self {
+            Self::AudioBufferSource(node) => node.lock().unwrap().set_onended(move |_| callback()),
+            Self::Oscillator(node) => node.lock().unwrap().set_onended(move |_| callback()),
+            Self::ConstantSource(node) => node.lock().unwrap().set_onended(move |_| callback()),
+        }
+    }
 }
 
 pub(crate) fn wrap_audio_node<T, P>(
@@ -1420,6 +1447,10 @@ impl AudioScheduledSourceNode {
 
     #[setter]
     pub(crate) fn set_onended(&mut self, value: Option<Py<PyAny>>) {
+        self.inner.clear_onended();
+        if let Some(onended) = value.as_ref() {
+            Python::attach(|py| self.inner.set_onended(onended.clone_ref(py)));
+        }
         self.onended = value;
     }
 }
