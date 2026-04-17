@@ -32,6 +32,8 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AudioBuffer>()?;
     m.add_class::<PeriodicWave>()?;
     m.add_class::<AudioListener>()?;
+    m.add_class::<Event>()?;
+    m.add_class::<EventTarget>()?;
     m.add_class::<AudioNode>()?;
     m.add_class::<AudioDestinationNode>()?;
     m.add_class::<AudioScheduledSourceNode>()?;

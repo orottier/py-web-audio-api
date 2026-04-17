@@ -499,6 +499,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         osc = web_audio_api.OscillatorNode(ctx)
         marker = object()
 
+        self.assertIsInstance(osc, web_audio_api.EventTarget)
         self.assertIsNone(osc.onended)
         osc.onended = marker
         self.assertIs(osc.onended, marker)
@@ -521,7 +522,23 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         ctx.startRendering()
 
         self.assertEqual(len(calls), 1)
-        self.assertIsNone(calls[0])
+        self.assertIsInstance(calls[0], web_audio_api.Event)
+        self.assertEqual(calls[0].type, "ended")
+        self.assertIsNone(calls[0].target)
+        self.assertIsNone(calls[0].currentTarget)
+
+    def test_event_target_manual_dispatch_works(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        osc = web_audio_api.OscillatorNode(ctx)
+        calls = []
+
+        def listener(event):
+            calls.append(event.type)
+
+        osc.addEventListener("ended", listener)
+        self.assertTrue(osc.dispatchEvent(web_audio_api.Event("ended")))
+        osc.removeEventListener("ended", listener)
+        self.assertEqual(calls, ["ended"])
 
     def test_constant_source_renders_scheduled_samples_offline(self):
         ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)

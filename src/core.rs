@@ -1,8 +1,177 @@
 use super::*;
+use std::collections::HashMap;
 
 pub(crate) static PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Default)]
+pub(crate) struct EventTargetRegistry {
+    handlers: HashMap<String, Py<PyAny>>,
+    listeners: HashMap<String, Vec<Py<PyAny>>>,
+}
+
+#[pyclass]
+pub(crate) struct Event {
+    type_: String,
+    target: Option<Py<PyAny>>,
+    current_target: Option<Py<PyAny>>,
+}
+
+impl Event {
+    pub(crate) fn new_dispatched(
+        type_: impl Into<String>,
+        target: Option<Py<PyAny>>,
+        current_target: Option<Py<PyAny>>,
+    ) -> Self {
+        Self {
+            type_: type_.into(),
+            target,
+            current_target,
+        }
+    }
+}
+
+#[pymethods]
+impl Event {
+    #[new]
+    pub(crate) fn new(type_: &str) -> Self {
+        Self::new_dispatched(type_, None, None)
+    }
+
+    #[getter]
+    pub(crate) fn r#type(&self) -> &str {
+        &self.type_
+    }
+
+    #[getter]
+    pub(crate) fn target(&self, py: Python<'_>) -> Py<PyAny> {
+        self.target
+            .as_ref()
+            .map(|target| target.clone_ref(py))
+            .unwrap_or_else(|| py.None())
+    }
+
+    #[getter(currentTarget)]
+    pub(crate) fn current_target(&self, py: Python<'_>) -> Py<PyAny> {
+        self.current_target
+            .as_ref()
+            .map(|target| target.clone_ref(py))
+            .unwrap_or_else(|| py.None())
+    }
+}
+
 #[pyclass(subclass)]
+pub(crate) struct EventTarget {
+    registry: Arc<Mutex<EventTargetRegistry>>,
+}
+
+impl EventTarget {
+    pub(crate) fn new() -> Self {
+        Self {
+            registry: Arc::new(Mutex::new(EventTargetRegistry::default())),
+        }
+    }
+
+    pub(crate) fn registry(&self) -> Arc<Mutex<EventTargetRegistry>> {
+        Arc::clone(&self.registry)
+    }
+
+    pub(crate) fn event_handler(&self, py: Python<'_>, type_: &str) -> Py<PyAny> {
+        self.registry
+            .lock()
+            .unwrap()
+            .handlers
+            .get(type_)
+            .map(|handler| handler.clone_ref(py))
+            .unwrap_or_else(|| py.None())
+    }
+
+    pub(crate) fn set_event_handler(&self, type_: &str, handler: Option<Py<PyAny>>) {
+        let mut registry = self.registry.lock().unwrap();
+        if let Some(handler) = handler {
+            registry.handlers.insert(type_.to_owned(), handler);
+        } else {
+            registry.handlers.remove(type_);
+        }
+    }
+
+    pub(crate) fn dispatch_from_registry(
+        py: Python<'_>,
+        registry: &Arc<Mutex<EventTargetRegistry>>,
+        type_: &str,
+        target: Option<Py<PyAny>>,
+        current_target: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        let (handler, listeners) = {
+            let registry = registry.lock().unwrap();
+            let handler = registry.handlers.get(type_).map(|h| h.clone_ref(py));
+            let listeners: Vec<Py<PyAny>> = registry
+                .listeners
+                .get(type_)
+                .map(|listeners| listeners.iter().map(|l| l.clone_ref(py)).collect())
+                .unwrap_or_default();
+            (handler, listeners)
+        };
+
+        let target = target.as_ref().map(|target| target.clone_ref(py));
+        let current_target = current_target
+            .as_ref()
+            .map(|current_target| current_target.clone_ref(py));
+
+        let event = Py::new(py, Event::new_dispatched(type_, target, current_target))?;
+
+        if let Some(handler) = handler {
+            handler.bind(py).call1((event.clone_ref(py),))?;
+        }
+
+        for listener in listeners {
+            listener.bind(py).call1((event.clone_ref(py),))?;
+        }
+
+        Ok(())
+    }
+}
+
+#[pymethods]
+impl EventTarget {
+    #[pyo3(name = "addEventListener")]
+    pub(crate) fn add_event_listener(
+        &self,
+        py: Python<'_>,
+        type_: &str,
+        listener: Py<PyAny>,
+    ) -> PyResult<()> {
+        if !listener.bind(py).is_callable() {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "listener must be callable",
+            ));
+        }
+
+        self.registry
+            .lock()
+            .unwrap()
+            .listeners
+            .entry(type_.to_owned())
+            .or_default()
+            .push(listener);
+        Ok(())
+    }
+
+    #[pyo3(name = "removeEventListener")]
+    pub(crate) fn remove_event_listener(&self, py: Python<'_>, type_: &str, listener: Py<PyAny>) {
+        if let Some(listeners) = self.registry.lock().unwrap().listeners.get_mut(type_) {
+            let listener_ptr = listener.bind(py).as_ptr();
+            listeners.retain(|existing| existing.bind(py).as_ptr() != listener_ptr);
+        }
+    }
+
+    #[pyo3(name = "dispatchEvent")]
+    pub(crate) fn dispatch_event(&self, py: Python<'_>, event: PyRef<'_, Event>) -> PyResult<bool> {
+        Self::dispatch_from_registry(py, &self.registry, &event.type_, None, None)?;
+        Ok(true)
+    }
+}
+
+#[pyclass(extends = EventTarget, subclass)]
 pub(crate) struct AudioNode(pub(crate) Arc<Mutex<dyn RsAudioNode + Send + 'static>>);
 
 #[pyclass(extends = AudioNode)]
@@ -370,17 +539,23 @@ pub(crate) fn catch_web_audio_panic_result<T>(f: impl FnOnce() -> T) -> PyResult
 
 pub(crate) fn destination_node_parts(
     ctx: &impl RsBaseAudioContext,
-) -> (AudioDestinationNode, AudioNode) {
+) -> (AudioDestinationNode, AudioNode, EventTarget) {
     let dest = Arc::new(Mutex::new(ctx.destination()));
     let node = Arc::clone(&dest) as Arc<Mutex<dyn RsAudioNode + Send + 'static>>;
-    (AudioDestinationNode(dest), AudioNode(node))
+    (
+        AudioDestinationNode(dest),
+        AudioNode(node),
+        EventTarget::new(),
+    )
 }
 
 pub(crate) fn destination_node(
     ctx: &impl RsBaseAudioContext,
 ) -> PyClassInitializer<AudioDestinationNode> {
-    let (dest, node) = destination_node_parts(ctx);
-    PyClassInitializer::from(node).add_subclass(dest)
+    let (dest, node, event_target) = destination_node_parts(ctx);
+    PyClassInitializer::from(event_target)
+        .add_subclass(node)
+        .add_subclass(dest)
 }
 
 pub(crate) fn destination_node_py(

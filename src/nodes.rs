@@ -105,22 +105,35 @@ impl ScheduledSourceInner {
         }
     }
 
-    pub(crate) fn set_onended(&self, callback: Py<PyAny>) {
-        let callback = move || {
-            Python::attach(|py| {
-                let callback = callback.bind(py);
-                if callback.is_callable() {
-                    if let Err(err) = callback.call1((py.None(),)) {
+    pub(crate) fn set_onended_registry(&self, registry: Arc<Mutex<EventTargetRegistry>>) {
+        match self {
+            Self::AudioBufferSource(node) => node.lock().unwrap().set_onended(move |_| {
+                Python::attach(|py| {
+                    if let Err(err) =
+                        EventTarget::dispatch_from_registry(py, &registry, "ended", None, None)
+                    {
                         err.print(py);
                     }
-                }
-            });
-        };
-
-        match self {
-            Self::AudioBufferSource(node) => node.lock().unwrap().set_onended(move |_| callback()),
-            Self::Oscillator(node) => node.lock().unwrap().set_onended(move |_| callback()),
-            Self::ConstantSource(node) => node.lock().unwrap().set_onended(move |_| callback()),
+                });
+            }),
+            Self::Oscillator(node) => node.lock().unwrap().set_onended(move |_| {
+                Python::attach(|py| {
+                    if let Err(err) =
+                        EventTarget::dispatch_from_registry(py, &registry, "ended", None, None)
+                    {
+                        err.print(py);
+                    }
+                });
+            }),
+            Self::ConstantSource(node) => node.lock().unwrap().set_onended(move |_| {
+                Python::attach(|py| {
+                    if let Err(err) =
+                        EventTarget::dispatch_from_registry(py, &registry, "ended", None, None)
+                    {
+                        err.print(py);
+                    }
+                });
+            }),
         }
     }
 }
@@ -146,7 +159,9 @@ where
     P: PyClass<BaseType = AudioNode>,
 {
     let (node, base) = wrap_audio_node(node, wrap);
-    PyClassInitializer::from(base).add_subclass(node)
+    PyClassInitializer::from(EventTarget::new())
+        .add_subclass(base)
+        .add_subclass(node)
 }
 
 pub(crate) fn new_audio_node_py<T, P>(
@@ -188,7 +203,8 @@ where
     P: PyClass<BaseType = AudioScheduledSourceNode>,
 {
     let (node, scheduled, base) = wrap_scheduled_source_node(node, scheduled, wrap);
-    PyClassInitializer::from(base)
+    PyClassInitializer::from(EventTarget::new())
+        .add_subclass(base)
         .add_subclass(scheduled)
         .add_subclass(node)
 }
@@ -1413,15 +1429,11 @@ impl AudioParam {
 #[pyclass(extends = AudioNode, subclass)]
 pub(crate) struct AudioScheduledSourceNode {
     inner: ScheduledSourceInner,
-    onended: Option<Py<PyAny>>,
 }
 
 impl AudioScheduledSourceNode {
     pub(crate) fn new(inner: ScheduledSourceInner) -> Self {
-        Self {
-            inner,
-            onended: None,
-        }
+        Self { inner }
     }
 }
 
@@ -1438,20 +1450,16 @@ impl AudioScheduledSourceNode {
     }
 
     #[getter]
-    pub(crate) fn onended(&self, py: Python<'_>) -> Py<PyAny> {
-        self.onended
-            .as_ref()
-            .map(|onended| onended.clone_ref(py))
-            .unwrap_or_else(|| py.None())
+    pub(crate) fn onended(slf: PyRef<'_, Self>, py: Python<'_>) -> Py<PyAny> {
+        slf.as_super().as_super().event_handler(py, "ended")
     }
 
     #[setter]
-    pub(crate) fn set_onended(&mut self, value: Option<Py<PyAny>>) {
-        self.inner.clear_onended();
-        if let Some(onended) = value.as_ref() {
-            Python::attach(|py| self.inner.set_onended(onended.clone_ref(py)));
-        }
-        self.onended = value;
+    pub(crate) fn set_onended(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let registry = slf.as_super().as_super().registry();
+        slf.as_super().as_super().set_event_handler("ended", value);
+        slf.inner.clear_onended();
+        slf.inner.set_onended_registry(registry);
     }
 }
 
