@@ -7,6 +7,7 @@ name = "web-audio-api"
 version = "0.2.0"
 requires-python = ">=3.11"
 description = "A Rust/Python implementation of the Web Audio API, for use in non-browser contexts"
+readme = "README.md"
 license = {text = "MIT License"}
 keywords = ["web-audio-api", "audio", "sound", "dsp"]
 classifiers = [

@@ -1,6 +1,27 @@
 # Python bindings for web-audio-api-rs
+[![PyPI version](https://img.shields.io/pypi/v/web-audio-api.svg)](https://pypi.org/project/web-audio-api/)
 
-https://pypi.org/project/web-audio-api/
+A Rust/Python implementation of the Web Audio API, for use in non-browser contexts.
+
+## Usage
+
+Install from PyPI:
+
+```bash
+pip install web-audio-api
+```
+
+Create a simple audio context and start an oscillator:
+
+```python
+import web_audio_api
+
+ctx = web_audio_api.AudioContext()
+osc = ctx.createOscillator()
+osc.frequency.value = 300
+osc.connect(ctx.destination)
+osc.start()
+```
 
 ## Local development
 
