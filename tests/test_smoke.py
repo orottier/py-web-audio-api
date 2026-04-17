@@ -419,6 +419,25 @@ class WebAudioApiSmokeTest(unittest.TestCase):
                 self.assertIsInstance(device.deviceId, str)
                 self.assertIsInstance(device.label, str)
 
+    def test_get_user_media_async_entrypoint_is_wired(self):
+        try:
+            stream = self.run_async(lambda: web_audio_api.getUserMedia())
+        except RuntimeError as exc:
+            self.assertNotIsInstance(exc, TypeError)
+        else:
+            self.assertIsInstance(stream, web_audio_api.MediaStream)
+            stream.close()
+
+    def test_enumerate_devices_async_entrypoint_is_wired(self):
+        try:
+            devices = self.run_async(lambda: web_audio_api.enumerateDevices())
+        except RuntimeError as exc:
+            self.assertNotIsInstance(exc, TypeError)
+        else:
+            self.assertIsInstance(devices, list)
+            if devices:
+                self.assertIsInstance(devices[0], web_audio_api.MediaDeviceInfo)
+
     def test_create_script_processor_passes_zero_buffer_size_through(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
 

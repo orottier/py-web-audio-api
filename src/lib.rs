@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyDictMethods};
 use pyo3::PyClass;
+use std::future::Future;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -23,6 +24,14 @@ use core::*;
 use data::*;
 use nodes::*;
 
+fn into_py_future<'py, F, T>(py: Python<'py>, fut: F) -> PyResult<Bound<'py, PyAny>>
+where
+    F: Future<Output = PyResult<T>> + Send + 'static,
+    T: for<'py2> IntoPyObject<'py2> + Send + 'static,
+{
+    pyo3_async_runtimes::tokio::future_into_py(py, fut)
+}
+
 #[pyfunction(name = "getUserMediaSync", signature = (constraints=None))]
 fn get_user_media_sync(constraints: Option<&Bound<'_, PyAny>>) -> PyResult<MediaStream> {
     let constraints = media_stream_constraints(constraints)?;
@@ -32,29 +41,47 @@ fn get_user_media_sync(constraints: Option<&Bound<'_, PyAny>>) -> PyResult<Media
     Ok(MediaStream(stream))
 }
 
+#[pyfunction(name = "getUserMedia", signature = (constraints=None))]
+fn get_user_media<'py>(
+    py: Python<'py>,
+    constraints: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let constraints = media_stream_constraints(constraints)?;
+    into_py_future(py, async move {
+        let stream = tokio::task::spawn_blocking(move || {
+            catch_web_audio_panic_result(|| {
+                web_audio_api_rs::media_devices::get_user_media_sync(constraints)
+            })
+        })
+        .await
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))??;
+        Ok(MediaStream(stream))
+    })
+}
+
 #[pyfunction(name = "enumerateDevicesSync")]
 fn enumerate_devices_sync() -> PyResult<Vec<MediaDeviceInfo>> {
     let devices =
         catch_web_audio_panic_result(web_audio_api_rs::media_devices::enumerate_devices_sync)?;
-    Ok(devices
-        .into_iter()
-        .map(|device| MediaDeviceInfo {
-            device_id: device.device_id().to_owned(),
-            group_id: device.group_id().map(str::to_owned),
-            kind: match device.kind() {
-                web_audio_api_rs::media_devices::MediaDeviceInfoKind::VideoInput => {
-                    "videoinput".to_owned()
-                }
-                web_audio_api_rs::media_devices::MediaDeviceInfoKind::AudioInput => {
-                    "audioinput".to_owned()
-                }
-                web_audio_api_rs::media_devices::MediaDeviceInfoKind::AudioOutput => {
-                    "audiooutput".to_owned()
-                }
-            },
-            label: device.label().to_owned(),
+    Ok(devices.into_iter().map(MediaDeviceInfo::from_rs).collect())
+}
+
+#[pyfunction(name = "enumerateDevices")]
+fn enumerate_devices<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    into_py_future(py, async move {
+        let devices = tokio::task::spawn_blocking(|| {
+            catch_web_audio_panic_result(web_audio_api_rs::media_devices::enumerate_devices_sync)
+                .map(|devices| {
+                    devices
+                        .into_iter()
+                        .map(MediaDeviceInfo::from_rs)
+                        .collect::<Vec<_>>()
+                })
         })
-        .collect())
+        .await
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))??;
+        Ok(devices)
+    })
 }
 
 /// A Python module implemented in Rust.
@@ -95,7 +122,9 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
+    m.add_function(wrap_pyfunction!(get_user_media, m)?)?;
     m.add_function(wrap_pyfunction!(get_user_media_sync, m)?)?;
+    m.add_function(wrap_pyfunction!(enumerate_devices, m)?)?;
     m.add_function(wrap_pyfunction!(enumerate_devices_sync, m)?)?;
     Ok(())
 }

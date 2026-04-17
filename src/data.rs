@@ -17,6 +17,27 @@ pub(crate) struct MediaDeviceInfo {
     pub(crate) label: String,
 }
 
+impl MediaDeviceInfo {
+    pub(crate) fn from_rs(device: web_audio_api_rs::media_devices::MediaDeviceInfo) -> Self {
+        Self {
+            device_id: device.device_id().to_owned(),
+            group_id: device.group_id().map(str::to_owned),
+            kind: match device.kind() {
+                web_audio_api_rs::media_devices::MediaDeviceInfoKind::VideoInput => {
+                    "videoinput".to_owned()
+                }
+                web_audio_api_rs::media_devices::MediaDeviceInfoKind::AudioInput => {
+                    "audioinput".to_owned()
+                }
+                web_audio_api_rs::media_devices::MediaDeviceInfoKind::AudioOutput => {
+                    "audiooutput".to_owned()
+                }
+            },
+            label: device.label().to_owned(),
+        }
+    }
+}
+
 #[pymethods]
 impl MediaStream {
     #[pyo3(name = "getTracks")]
