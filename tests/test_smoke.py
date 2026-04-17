@@ -678,6 +678,67 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         dest.stream.close()
         self.run_async(lambda: ctx.close())
 
+    def test_media_stream_track_from_buffer_iterator_feeds_audio_context(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none", "sampleRate": 8_000.0})
+        source_track = web_audio_api.MediaStreamTrack.fromBufferIterator(
+            [
+                [0.25] * 128,
+                [0.5] * 128,
+                [0.75] * 128,
+            ],
+            sampleRate=8_000.0,
+            numberOfChannels=1,
+        )
+        stream = web_audio_api.MediaStream.fromTracks([source_track])
+        source = ctx.createMediaStreamSource(stream)
+        dest = ctx.createMediaStreamDestination()
+        iterator = dest.stream.iterBuffers()
+
+        source.connect(dest)
+        self.run_async(lambda: ctx.resume())
+
+        observed = []
+        for _ in range(3):
+            observed.extend(next(iterator).getChannelData(0))
+
+        self.assertTrue(any(abs(sample - 0.25) < 1e-4 for sample in observed))
+        self.assertTrue(any(abs(sample - 0.5) < 1e-4 for sample in observed))
+        self.assertTrue(any(abs(sample - 0.75) < 1e-4 for sample in observed))
+
+        stream.close()
+        dest.stream.close()
+        self.run_async(lambda: ctx.close())
+
+    def test_media_stream_from_buffer_iterator_accepts_audio_buffers(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none", "sampleRate": 8_000.0})
+        buffer_a = web_audio_api.AudioBuffer(
+            {"numberOfChannels": 1, "length": 128, "sampleRate": 8_000.0}
+        )
+        buffer_b = web_audio_api.AudioBuffer(
+            {"numberOfChannels": 1, "length": 128, "sampleRate": 8_000.0}
+        )
+        buffer_a.copyToChannel([0.1] * 128, 0)
+        buffer_b.copyToChannel([0.3] * 128, 0)
+
+        stream = web_audio_api.MediaStream.fromBufferIterator(iter([buffer_a, buffer_b]))
+        source = ctx.createMediaStreamSource(stream)
+        dest = ctx.createMediaStreamDestination()
+        iterator = dest.stream.getTracks()[0].iterBuffers()
+
+        source.connect(dest)
+        self.run_async(lambda: ctx.resume())
+
+        observed = []
+        for _ in range(2):
+            observed.extend(next(iterator).getChannelData(0))
+
+        self.assertTrue(any(abs(sample - 0.1) < 1e-4 for sample in observed))
+        self.assertTrue(any(abs(sample - 0.3) < 1e-4 for sample in observed))
+
+        stream.close()
+        dest.stream.close()
+        self.run_async(lambda: ctx.close())
+
     def test_media_stream_audio_source_surface_is_wired(self):
         src_ctx = web_audio_api.AudioContext({"sinkId": "none"})
         dest_ctx = web_audio_api.AudioContext({"sinkId": "none"})

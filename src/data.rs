@@ -1,6 +1,6 @@
 use super::*;
-use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError};
-use pyo3::types::{PyList, PyModule, PyTuple, PyType};
+use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyStopIteration, PyTypeError, PyValueError};
+use pyo3::types::{PyIterator, PyList, PyModule, PyTuple, PyType};
 use pyo3::IntoPyObjectExt;
 use std::any::Any;
 use std::cell::RefCell;
@@ -32,6 +32,80 @@ pub(crate) struct MediaStreamTrackBufferIterator {
                 + 'static,
         >,
     >,
+}
+
+struct PythonMediaStreamTrackProvider {
+    iterator: Py<PyAny>,
+    sample_rate: Option<f32>,
+    number_of_channels: Option<usize>,
+}
+
+impl PythonMediaStreamTrackProvider {
+    fn buffer_from_value(
+        &self,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<web_audio_api_rs::AudioBuffer> {
+        if let Ok(buffer) = value.extract::<PyRef<'_, AudioBuffer>>() {
+            let snapshot = buffer.snapshot()?;
+            if let Some(number_of_channels) = self.number_of_channels {
+                if snapshot.number_of_channels() != number_of_channels {
+                    return Err(PyValueError::new_err(format!(
+                        "expected {number_of_channels} channels but got {}",
+                        snapshot.number_of_channels()
+                    )));
+                }
+            }
+            return Ok(snapshot);
+        }
+
+        let sample_rate = self.sample_rate.ok_or_else(|| {
+            PyTypeError::new_err(
+                "sampleRate is required when yielding raw sample lists from MediaStreamTrack.fromBufferIterator",
+            )
+        })?;
+
+        let channels = py_to_channel_samples(value)?;
+        if let Some(number_of_channels) = self.number_of_channels {
+            if channels.len() != number_of_channels {
+                return Err(PyValueError::new_err(format!(
+                    "expected {number_of_channels} channels but got {}",
+                    channels.len()
+                )));
+            }
+        }
+        Ok(web_audio_api_rs::AudioBuffer::from(channels, sample_rate))
+    }
+}
+
+impl PythonMediaStreamTrackProvider {
+    fn next_item(
+        &self,
+    ) -> Option<Result<web_audio_api_rs::AudioBuffer, Box<dyn std::error::Error + Send + Sync>>>
+    {
+        Python::attach(|py| match self.iterator.bind(py).call_method0("__next__") {
+            Ok(value) => Some(self.buffer_from_value(&value).map_err(
+                |err| -> Box<dyn std::error::Error + Send + Sync> { err.to_string().into() },
+            )),
+            Err(err) if err.is_instance_of::<PyStopIteration>(py) => None,
+            Err(err) => Some(Err(err.to_string().into())),
+        })
+    }
+}
+
+struct QueuedMediaStreamTrackProvider {
+    receiver: Mutex<
+        std::sync::mpsc::Receiver<
+            Result<web_audio_api_rs::AudioBuffer, Box<dyn std::error::Error + Send + Sync>>,
+        >,
+    >,
+}
+
+impl Iterator for QueuedMediaStreamTrackProvider {
+    type Item = Result<web_audio_api_rs::AudioBuffer, Box<dyn std::error::Error + Send + Sync>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.receiver.lock().unwrap().recv().ok()
+    }
 }
 
 #[pyclass]
@@ -1165,6 +1239,31 @@ pub(crate) fn registered_worklet_descriptors(
 
 #[pymethods]
 impl MediaStream {
+    #[staticmethod]
+    #[pyo3(name = "fromTracks")]
+    pub(crate) fn from_tracks(tracks: Vec<PyRef<'_, MediaStreamTrack>>) -> Self {
+        Self(web_audio_api_rs::media_streams::MediaStream::from_tracks(
+            tracks.into_iter().map(|track| track.0.clone()).collect(),
+        ))
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "fromBufferIterator", signature = (iterable, sampleRate=None, numberOfChannels=None))]
+    #[allow(non_snake_case)]
+    pub(crate) fn from_buffer_iterator(
+        py: Python<'_>,
+        iterable: &Bound<'_, PyAny>,
+        sampleRate: Option<f32>,
+        numberOfChannels: Option<usize>,
+    ) -> PyResult<Self> {
+        Ok(Self(
+            web_audio_api_rs::media_streams::MediaStream::from_tracks(vec![
+                MediaStreamTrack::from_buffer_iterator(py, iterable, sampleRate, numberOfChannels)?
+                    .0,
+            ]),
+        ))
+    }
+
     #[pyo3(name = "iterBuffers")]
     pub(crate) fn iter_buffers(&self) -> PyResult<MediaStreamTrackBufferIterator> {
         let track = self
@@ -1198,6 +1297,46 @@ impl MediaStream {
 
 #[pymethods]
 impl MediaStreamTrack {
+    #[staticmethod]
+    #[pyo3(name = "fromBufferIterator", signature = (iterable, sampleRate=None, numberOfChannels=None))]
+    #[allow(non_snake_case)]
+    pub(crate) fn from_buffer_iterator(
+        _py: Python<'_>,
+        iterable: &Bound<'_, PyAny>,
+        sampleRate: Option<f32>,
+        numberOfChannels: Option<usize>,
+    ) -> PyResult<Self> {
+        let iterator = PyIterator::from_object(iterable)
+            .map_err(|_| {
+                PyTypeError::new_err(
+                    "MediaStreamTrack.fromBufferIterator expects a Python iterable",
+                )
+            })?
+            .into_any()
+            .unbind();
+        let provider = PythonMediaStreamTrackProvider {
+            iterator,
+            sample_rate: sampleRate,
+            number_of_channels: numberOfChannels,
+        };
+        let (send, recv) = mpsc::sync_channel(8);
+        thread::spawn(move || {
+            while let Some(item) = provider.next_item() {
+                if send.send(item).is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Self(
+            web_audio_api_rs::media_streams::MediaStreamTrack::from_iter(
+                QueuedMediaStreamTrackProvider {
+                    receiver: Mutex::new(recv),
+                },
+            ),
+        ))
+    }
+
     #[pyo3(name = "iterBuffers")]
     pub(crate) fn iter_buffers(&self) -> MediaStreamTrackBufferIterator {
         MediaStreamTrackBufferIterator {
@@ -1680,4 +1819,18 @@ pub(crate) fn media_stream_constraints(
     }
 
     Ok(web_audio_api_rs::media_devices::MediaStreamConstraints::AudioWithConstraints(parsed))
+}
+
+fn py_to_channel_samples(value: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<f32>>> {
+    if let Ok(samples) = value.extract::<Vec<f32>>() {
+        return Ok(vec![samples]);
+    }
+
+    if let Ok(channels) = value.extract::<Vec<Vec<f32>>>() {
+        return Ok(channels);
+    }
+
+    Err(PyTypeError::new_err(
+        "buffer iterator items must be AudioBuffer, list[float], or list[list[float]]",
+    ))
 }
