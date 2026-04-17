@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "web-audio-api"
-version = "0.2.0"
+dynamic = ["version"]
 requires-python = ">=3.11"
 description = "A Rust/Python implementation of the Web Audio API, for use in non-browser contexts"
 readme = "README.md"
