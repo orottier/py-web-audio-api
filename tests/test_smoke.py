@@ -1,5 +1,7 @@
 import asyncio
 import io
+import threading
+import time
 import unittest
 import wave
 
@@ -418,6 +420,76 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertGreaterEqual(len(tracks), 1)
         self.assertIsInstance(tracks[0], web_audio_api.MediaStreamTrack)
         stream.close()
+
+    def test_media_recorder_records_stream_destination_output(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        src = ctx.createConstantSource()
+        dest = ctx.createMediaStreamDestination()
+        recorder = web_audio_api.MediaRecorder(dest.stream)
+
+        chunks = []
+        stop_event = threading.Event()
+
+        def on_data(event):
+            chunks.append((event.data.size, event.data.type, event.data.bytes()))
+
+        def on_stop(event):
+            stop_event.set()
+
+        recorder.ondataavailable = on_data
+        recorder.onstop = on_stop
+
+        src.connect(dest)
+        src.start()
+        self.run_async(lambda: ctx.resume())
+        recorder.start()
+        time.sleep(0.1)
+        recorder.stop()
+
+        self.assertTrue(stop_event.wait(1.0))
+        self.assertEqual(recorder.state, "inactive")
+        self.assertGreaterEqual(len(chunks), 1)
+        self.assertTrue(any(size > 0 for size, _, _ in chunks))
+        self.assertTrue(all(type_ == "audio/wav" for _, type_, _ in chunks))
+        self.assertTrue(any(len(data) > 0 for _, _, data in chunks))
+
+        src.stop()
+        dest.stream.close()
+        self.run_async(lambda: ctx.close())
+
+    def test_media_recorder_listener_api_works(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        src = ctx.createConstantSource()
+        dest = ctx.createMediaStreamDestination()
+        recorder = web_audio_api.MediaRecorder(dest.stream, {"mimeType": "audio/wav"})
+
+        self.assertTrue(web_audio_api.MediaRecorder.isTypeSupported("audio/wav"))
+        self.assertFalse(web_audio_api.MediaRecorder.isTypeSupported("audio/ogg"))
+        self.assertEqual(recorder.mimeType, "audio/wav")
+        self.assertEqual(recorder.state, "inactive")
+
+        data_events = []
+        stop_event = threading.Event()
+
+        recorder.addEventListener(
+            "dataavailable", lambda event: data_events.append(event.timecode)
+        )
+        recorder.addEventListener("stop", lambda event: stop_event.set())
+
+        src.connect(dest)
+        src.start()
+        self.run_async(lambda: ctx.resume())
+        recorder.start()
+        self.assertEqual(recorder.state, "recording")
+        time.sleep(0.05)
+        recorder.stop()
+
+        self.assertTrue(stop_event.wait(1.0))
+        self.assertGreaterEqual(len(data_events), 1)
+
+        src.stop()
+        dest.stream.close()
+        self.run_async(lambda: ctx.close())
 
     def test_enumerate_devices_sync_entrypoint_is_wired(self):
         try:

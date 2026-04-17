@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 #[pyclass(skip_from_py_object)]
 #[derive(Clone)]
@@ -15,6 +16,47 @@ pub(crate) struct MediaDeviceInfo {
     pub(crate) group_id: Option<String>,
     pub(crate) kind: String,
     pub(crate) label: String,
+}
+
+#[pyclass(skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub(crate) struct Blob {
+    data: Vec<u8>,
+    type_: String,
+}
+
+#[pyclass(extends = Event)]
+pub(crate) struct BlobEvent {
+    blob: Blob,
+    timecode: f64,
+}
+
+#[pyclass(extends = Event)]
+pub(crate) struct ErrorEvent {
+    message: String,
+}
+
+#[derive(Clone, Copy)]
+enum MediaRecorderState {
+    Inactive = 0,
+    Recording = 1,
+}
+
+impl MediaRecorderState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Inactive => "inactive",
+            Self::Recording => "recording",
+        }
+    }
+}
+
+#[pyclass(extends = EventTarget)]
+pub(crate) struct MediaRecorder {
+    inner: Arc<web_audio_api_rs::media_recorder::MediaRecorder>,
+    stream: MediaStream,
+    mime_type: String,
+    state: Arc<AtomicU8>,
 }
 
 impl MediaDeviceInfo {
@@ -35,6 +77,133 @@ impl MediaDeviceInfo {
             },
             label: device.label().to_owned(),
         }
+    }
+}
+
+fn media_recorder_state_name(state: &Arc<AtomicU8>) -> &'static str {
+    match state.load(Ordering::SeqCst) {
+        1 => MediaRecorderState::Recording.as_str(),
+        _ => MediaRecorderState::Inactive.as_str(),
+    }
+}
+
+fn blob_event_py(
+    py: Python<'_>,
+    registry: &Arc<Mutex<EventTargetRegistry>>,
+    blob: web_audio_api_rs::media_recorder::Blob,
+    timecode: f64,
+) -> PyResult<Py<PyAny>> {
+    let owner = EventTarget::owner_for_registry(py, registry);
+    let type_ = blob.type_().to_owned();
+    let event = Py::new(
+        py,
+        PyClassInitializer::from(Event::new_dispatched(
+            "dataavailable",
+            owner.as_ref().map(|owner| owner.clone_ref(py)),
+            owner.as_ref().map(|owner| owner.clone_ref(py)),
+        ))
+        .add_subclass(BlobEvent {
+            blob: Blob {
+                data: blob.data,
+                type_,
+            },
+            timecode,
+        }),
+    )?;
+    Ok(event.into_any())
+}
+
+fn error_event_py(
+    py: Python<'_>,
+    registry: &Arc<Mutex<EventTargetRegistry>>,
+    message: String,
+) -> PyResult<Py<PyAny>> {
+    let owner = EventTarget::owner_for_registry(py, registry);
+    let event = Py::new(
+        py,
+        PyClassInitializer::from(Event::new_dispatched(
+            "error",
+            owner.as_ref().map(|owner| owner.clone_ref(py)),
+            owner.as_ref().map(|owner| owner.clone_ref(py)),
+        ))
+        .add_subclass(ErrorEvent { message }),
+    )?;
+    Ok(event.into_any())
+}
+
+impl MediaRecorder {
+    fn options(
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<web_audio_api_rs::media_recorder::MediaRecorderOptions> {
+        let Some(options) = options else {
+            return Ok(Default::default());
+        };
+
+        let options = options.cast::<PyDict>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("MediaRecorderOptions must be a dict")
+        })?;
+
+        let mut parsed = web_audio_api_rs::media_recorder::MediaRecorderOptions::default();
+        if let Some(mime_type) = options.get_item("mimeType")? {
+            parsed.mime_type = mime_type.extract()?;
+        }
+        Ok(parsed)
+    }
+
+    fn install_callbacks(&self, registry: Arc<Mutex<EventTargetRegistry>>) {
+        self.inner.clear_ondataavailable();
+        self.inner.clear_onstop();
+        self.inner.clear_onerror();
+
+        let data_registry = Arc::clone(&registry);
+        self.inner.set_ondataavailable(move |event| {
+            Python::attach(|py| {
+                match blob_event_py(py, &data_registry, event.blob, event.timecode) {
+                    Ok(event) => {
+                        if let Err(err) = EventTarget::dispatch_event_object(
+                            py,
+                            &data_registry,
+                            "dataavailable",
+                            event,
+                        ) {
+                            err.print(py);
+                        }
+                    }
+                    Err(err) => err.print(py),
+                }
+            });
+        });
+
+        let stop_registry = Arc::clone(&registry);
+        let stop_state = Arc::clone(&self.state);
+        self.inner.set_onstop(move |_| {
+            stop_state.store(MediaRecorderState::Inactive as u8, Ordering::SeqCst);
+            Python::attach(|py| {
+                if let Err(err) =
+                    EventTarget::dispatch_from_registry(py, &stop_registry, "stop", None, None)
+                {
+                    err.print(py);
+                }
+            });
+        });
+
+        let error_registry = registry;
+        let error_state = Arc::clone(&self.state);
+        self.inner.set_onerror(move |event| {
+            error_state.store(MediaRecorderState::Inactive as u8, Ordering::SeqCst);
+            Python::attach(
+                |py| match error_event_py(py, &error_registry, event.message) {
+                    Ok(event) => {
+                        if let Err(err) =
+                            EventTarget::dispatch_event_object(py, &error_registry, "error", event)
+                        {
+                            err.print(py);
+                        }
+                    }
+                    Err(err) => err.print(py),
+                },
+            );
+        });
     }
 }
 
@@ -71,6 +240,152 @@ impl MediaStreamTrack {
     #[pyo3(name = "close")]
     pub(crate) fn close(&self) {
         self.0.close();
+    }
+}
+
+#[pymethods]
+impl Blob {
+    #[getter]
+    pub(crate) fn size(&self) -> usize {
+        self.data.len()
+    }
+
+    #[getter]
+    pub(crate) fn r#type(&self) -> &str {
+        &self.type_
+    }
+
+    pub(crate) fn bytes(&self) -> Vec<u8> {
+        self.data.clone()
+    }
+}
+
+#[pymethods]
+impl BlobEvent {
+    #[getter]
+    pub(crate) fn data(&self) -> Blob {
+        self.blob.clone()
+    }
+
+    #[getter]
+    pub(crate) fn timecode(&self) -> f64 {
+        self.timecode
+    }
+}
+
+#[pymethods]
+impl ErrorEvent {
+    #[getter]
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+#[pymethods]
+impl MediaRecorder {
+    #[new]
+    #[pyo3(signature = (stream, options=None))]
+    pub(crate) fn new(
+        stream: PyRef<'_, MediaStream>,
+        options: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let options = Self::options(options)?;
+        let mime_type = if options.mime_type.is_empty() {
+            "audio/wav".to_owned()
+        } else {
+            options.mime_type.clone()
+        };
+        let inner = Arc::new(catch_web_audio_panic_result(|| {
+            web_audio_api_rs::media_recorder::MediaRecorder::new(&stream.0, options)
+        })?);
+        Ok(
+            PyClassInitializer::from(EventTarget::new()).add_subclass(Self {
+                inner,
+                stream: stream.clone(),
+                mime_type,
+                state: Arc::new(AtomicU8::new(MediaRecorderState::Inactive as u8)),
+            }),
+        )
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "isTypeSupported")]
+    pub(crate) fn is_type_supported(mime_type: &str) -> bool {
+        web_audio_api_rs::media_recorder::MediaRecorder::is_type_supported(mime_type)
+    }
+
+    #[getter]
+    pub(crate) fn stream(&self) -> MediaStream {
+        self.stream.clone()
+    }
+
+    #[getter(mimeType)]
+    pub(crate) fn mime_type(&self) -> &str {
+        &self.mime_type
+    }
+
+    #[getter]
+    pub(crate) fn state(&self) -> &'static str {
+        media_recorder_state_name(&self.state)
+    }
+
+    #[getter]
+    pub(crate) fn ondataavailable(slf: PyRef<'_, Self>, py: Python<'_>) -> Py<PyAny> {
+        slf.as_super().event_handler(py, "dataavailable")
+    }
+
+    #[setter]
+    pub(crate) fn set_ondataavailable(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let owner = EventTarget::owner_from_ptr(slf.py(), slf.as_ptr());
+        slf.as_super().set_owner(owner);
+        let registry = slf.as_super().registry();
+        slf.as_super().set_event_handler("dataavailable", value);
+        slf.install_callbacks(registry);
+    }
+
+    #[getter]
+    pub(crate) fn onstop(slf: PyRef<'_, Self>, py: Python<'_>) -> Py<PyAny> {
+        slf.as_super().event_handler(py, "stop")
+    }
+
+    #[setter]
+    pub(crate) fn set_onstop(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let owner = EventTarget::owner_from_ptr(slf.py(), slf.as_ptr());
+        slf.as_super().set_owner(owner);
+        let registry = slf.as_super().registry();
+        slf.as_super().set_event_handler("stop", value);
+        slf.install_callbacks(registry);
+    }
+
+    #[getter]
+    pub(crate) fn onerror(slf: PyRef<'_, Self>, py: Python<'_>) -> Py<PyAny> {
+        slf.as_super().event_handler(py, "error")
+    }
+
+    #[setter]
+    pub(crate) fn set_onerror(mut slf: PyRefMut<'_, Self>, value: Option<Py<PyAny>>) {
+        let owner = EventTarget::owner_from_ptr(slf.py(), slf.as_ptr());
+        slf.as_super().set_owner(owner);
+        let registry = slf.as_super().registry();
+        slf.as_super().set_event_handler("error", value);
+        slf.install_callbacks(registry);
+    }
+
+    pub(crate) fn start(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<()> {
+        slf.as_super()
+            .set_owner(EventTarget::owner_from_ptr(py, slf.as_ptr()));
+        slf.install_callbacks(slf.as_super().registry());
+        catch_web_audio_panic(|| slf.inner.start())?;
+        slf.state
+            .store(MediaRecorderState::Recording as u8, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub(crate) fn stop(&self) -> PyResult<()> {
+        catch_web_audio_panic(|| self.inner.stop())?;
+        self.state
+            .store(MediaRecorderState::Inactive as u8, Ordering::SeqCst);
+        Ok(())
     }
 }
 
