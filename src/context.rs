@@ -891,6 +891,14 @@ impl AudioContext {
         media_stream_track_audio_source_node_py(py, self.0.as_ref(), &media_stream_track.0)
     }
 
+    #[pyo3(name = "createMediaStreamDestination")]
+    pub(crate) fn create_media_stream_destination(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<Py<MediaStreamAudioDestinationNode>> {
+        media_stream_audio_destination_node_py(py, self.0.as_ref())
+    }
+
     #[new]
     #[pyo3(signature = (options=None))]
     pub(crate) fn new(options: Option<&Bound<'_, PyAny>>) -> PyResult<PyClassInitializer<Self>> {

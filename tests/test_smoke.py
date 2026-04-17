@@ -405,6 +405,20 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             track.close()
             stream.close()
 
+    def test_media_stream_audio_destination_surface_is_wired(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        dest = ctx.createMediaStreamDestination()
+
+        self.assertIsInstance(dest, web_audio_api.MediaStreamAudioDestinationNode)
+        self.assertIsInstance(dest, web_audio_api.AudioNode)
+
+        stream = dest.stream
+        self.assertIsInstance(stream, web_audio_api.MediaStream)
+        tracks = stream.getTracks()
+        self.assertGreaterEqual(len(tracks), 1)
+        self.assertIsInstance(tracks[0], web_audio_api.MediaStreamTrack)
+        stream.close()
+
     def test_enumerate_devices_sync_entrypoint_is_wired(self):
         try:
             devices = web_audio_api.enumerateDevicesSync()

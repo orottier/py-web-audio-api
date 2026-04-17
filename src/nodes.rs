@@ -325,6 +325,27 @@ pub(crate) fn media_stream_track_audio_source_node_py(
 }
 
 #[cfg(test)]
+pub(crate) fn media_stream_audio_destination_node_parts(
+    ctx: &web_audio_api_rs::context::AudioContext,
+) -> (MediaStreamAudioDestinationNode, AudioNode) {
+    wrap_audio_node(
+        ctx.create_media_stream_destination(),
+        MediaStreamAudioDestinationNode,
+    )
+}
+
+pub(crate) fn media_stream_audio_destination_node_py(
+    py: Python<'_>,
+    ctx: &web_audio_api_rs::context::AudioContext,
+) -> PyResult<Py<MediaStreamAudioDestinationNode>> {
+    new_audio_node_py(
+        py,
+        ctx.create_media_stream_destination(),
+        MediaStreamAudioDestinationNode,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn analyser_node_parts(
     ctx: &impl RsBaseAudioContext,
     options: web_audio_api_rs::node::AnalyserOptions,
@@ -1606,6 +1627,11 @@ pub(crate) struct MediaStreamTrackAudioSourceNode(
     pub(crate) Arc<Mutex<web_audio_api_rs::node::MediaStreamTrackAudioSourceNode>>,
 );
 
+#[pyclass(extends = AudioNode)]
+pub(crate) struct MediaStreamAudioDestinationNode(
+    pub(crate) Arc<Mutex<web_audio_api_rs::node::MediaStreamAudioDestinationNode>>,
+);
+
 #[pymethods]
 impl AudioBufferSourceNode {
     #[new]
@@ -1762,6 +1788,14 @@ impl MediaStreamTrackAudioSourceNode {
             ctx.0.as_ref(),
             &media_stream_track.0,
         ))
+    }
+}
+
+#[pymethods]
+impl MediaStreamAudioDestinationNode {
+    #[getter]
+    pub(crate) fn stream(&self) -> MediaStream {
+        MediaStream(self.0.lock().unwrap().stream().clone())
     }
 }
 

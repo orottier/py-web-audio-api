@@ -119,6 +119,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ScriptProcessorNode>()?;
     m.add_class::<MediaStreamAudioSourceNode>()?;
     m.add_class::<MediaStreamTrackAudioSourceNode>()?;
+    m.add_class::<MediaStreamAudioDestinationNode>()?;
     m.add_class::<OscillatorNode>()?;
     m.add_class::<ConstantSourceNode>()?;
     m.add_class::<AudioParam>()?;
@@ -217,6 +218,16 @@ mod tests {
 
         assert_eq!(node.number_of_inputs().unwrap(), 0);
         assert_eq!(node.number_of_outputs().unwrap(), 1);
+    }
+
+    #[test]
+    fn media_stream_audio_destination_graph_smoke_test() {
+        let (ctx, _) = audio_context_parts();
+        let (dest, node) = media_stream_audio_destination_node_parts(&ctx.0);
+
+        assert_eq!(node.number_of_inputs().unwrap(), 1);
+        assert_eq!(node.number_of_outputs().unwrap(), 0);
+        assert_eq!(dest.stream().get_tracks().len(), 1);
     }
 
     #[test]
