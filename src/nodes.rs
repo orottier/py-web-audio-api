@@ -66,6 +66,32 @@ pub(crate) fn update_audio_node_options(
     Ok(())
 }
 
+pub(crate) fn with_option_item<'py>(
+    options: &Bound<'py, PyDict>,
+    key: &str,
+    apply: impl FnOnce(Bound<'py, PyAny>) -> PyResult<()>,
+) -> PyResult<()> {
+    if let Some(value) = options.get_item(key)? {
+        apply(value)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn update_option_field<'py, T>(
+    options: &Bound<'py, PyDict>,
+    key: &str,
+    target: &mut T,
+) -> PyResult<()>
+where
+    T: for<'a> pyo3::FromPyObject<'a, 'py>,
+    for<'a> <T as pyo3::FromPyObject<'a, 'py>>::Error: Into<pyo3::PyErr>,
+{
+    if let Some(value) = options.get_item(key)? {
+        *target = value.extract().map_err(Into::<pyo3::PyErr>::into)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn audio_worklet_node_options(
     name: &str,
     options: Option<&Bound<'_, PyAny>>,
@@ -969,17 +995,10 @@ pub(crate) fn constant_source_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::ConstantSourceOptions> {
     let mut parsed = web_audio_api_rs::node::ConstantSourceOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "ConstantSourceOptions")? else {
         return Ok(parsed);
     };
-
-    let options = options.cast::<PyDict>().map_err(|_| {
-        pyo3::exceptions::PyTypeError::new_err("ConstantSourceOptions must be a dict")
-    })?;
-
-    if let Some(offset) = options.get_item("offset")? {
-        parsed.offset = offset.extract()?;
-    }
+    update_option_field(options, "offset", &mut parsed.offset)?;
 
     Ok(parsed)
 }
@@ -988,34 +1007,21 @@ pub(crate) fn audio_buffer_source_options(
     options: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<web_audio_api_rs::node::AudioBufferSourceOptions> {
     let mut parsed = web_audio_api_rs::node::AudioBufferSourceOptions::default();
-    let Some(options) = options else {
+    let Some(options) = options_dict(options, "AudioBufferSourceOptions")? else {
         return Ok(parsed);
     };
 
-    let options = options.cast::<PyDict>().map_err(|_| {
-        pyo3::exceptions::PyTypeError::new_err("AudioBufferSourceOptions must be a dict")
-    })?;
-
-    if let Some(buffer) = options.get_item("buffer")? {
+    with_option_item(options, "buffer", |buffer| {
         if !buffer.is_none() {
             parsed.buffer = Some(buffer.extract::<PyRef<'_, AudioBuffer>>()?.snapshot()?);
         }
-    }
-    if let Some(detune) = options.get_item("detune")? {
-        parsed.detune = detune.extract()?;
-    }
-    if let Some(loop_) = options.get_item("loop")? {
-        parsed.loop_ = loop_.extract()?;
-    }
-    if let Some(loop_end) = options.get_item("loopEnd")? {
-        parsed.loop_end = loop_end.extract()?;
-    }
-    if let Some(loop_start) = options.get_item("loopStart")? {
-        parsed.loop_start = loop_start.extract()?;
-    }
-    if let Some(playback_rate) = options.get_item("playbackRate")? {
-        parsed.playback_rate = playback_rate.extract()?;
-    }
+        Ok(())
+    })?;
+    update_option_field(options, "detune", &mut parsed.detune)?;
+    update_option_field(options, "loop", &mut parsed.loop_)?;
+    update_option_field(options, "loopEnd", &mut parsed.loop_end)?;
+    update_option_field(options, "loopStart", &mut parsed.loop_start)?;
+    update_option_field(options, "playbackRate", &mut parsed.playback_rate)?;
 
     Ok(parsed)
 }
@@ -1029,10 +1035,7 @@ pub(crate) fn gain_options(
     };
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
-
-    if let Some(gain) = options.get_item("gain")? {
-        parsed.gain = gain.extract()?;
-    }
+    update_option_field(options, "gain", &mut parsed.gain)?;
 
     Ok(parsed)
 }
@@ -1046,19 +1049,14 @@ pub(crate) fn analyser_options(
     };
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
-
-    if let Some(fft_size) = options.get_item("fftSize")? {
-        parsed.fft_size = fft_size.extract()?;
-    }
-    if let Some(max_decibels) = options.get_item("maxDecibels")? {
-        parsed.max_decibels = max_decibels.extract()?;
-    }
-    if let Some(min_decibels) = options.get_item("minDecibels")? {
-        parsed.min_decibels = min_decibels.extract()?;
-    }
-    if let Some(smoothing_time_constant) = options.get_item("smoothingTimeConstant")? {
-        parsed.smoothing_time_constant = smoothing_time_constant.extract()?;
-    }
+    update_option_field(options, "fftSize", &mut parsed.fft_size)?;
+    update_option_field(options, "maxDecibels", &mut parsed.max_decibels)?;
+    update_option_field(options, "minDecibels", &mut parsed.min_decibels)?;
+    update_option_field(
+        options,
+        "smoothingTimeConstant",
+        &mut parsed.smoothing_time_constant,
+    )?;
 
     Ok(parsed)
 }
@@ -1073,18 +1071,24 @@ pub(crate) fn convolver_options(
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
-    if let Some(buffer) = options.get_item("buffer")? {
+    with_option_item(options, "buffer", |buffer| {
         if !buffer.is_none() {
             parsed.buffer = Some(buffer.extract::<PyRef<'_, AudioBuffer>>()?.snapshot()?);
         }
-    }
-    if let Some(normalize) = options.get_item("normalize")? {
-        let normalize = normalize.extract::<bool>()?;
+        Ok(())
+    })?;
+    with_option_item(options, "normalize", |normalize| {
+        let normalize = normalize
+            .extract::<bool>()
+            .map_err(Into::<pyo3::PyErr>::into)?;
         parsed.disable_normalization = !normalize;
-    }
-    if let Some(disable_normalization) = options.get_item("disableNormalization")? {
-        parsed.disable_normalization = disable_normalization.extract()?;
-    }
+        Ok(())
+    })?;
+    update_option_field(
+        options,
+        "disableNormalization",
+        &mut parsed.disable_normalization,
+    )?;
 
     Ok(parsed)
 }
@@ -1098,22 +1102,11 @@ pub(crate) fn dynamics_compressor_options(
     };
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
-
-    if let Some(attack) = options.get_item("attack")? {
-        parsed.attack = attack.extract()?;
-    }
-    if let Some(knee) = options.get_item("knee")? {
-        parsed.knee = knee.extract()?;
-    }
-    if let Some(ratio) = options.get_item("ratio")? {
-        parsed.ratio = ratio.extract()?;
-    }
-    if let Some(release) = options.get_item("release")? {
-        parsed.release = release.extract()?;
-    }
-    if let Some(threshold) = options.get_item("threshold")? {
-        parsed.threshold = threshold.extract()?;
-    }
+    update_option_field(options, "attack", &mut parsed.attack)?;
+    update_option_field(options, "knee", &mut parsed.knee)?;
+    update_option_field(options, "ratio", &mut parsed.ratio)?;
+    update_option_field(options, "release", &mut parsed.release)?;
+    update_option_field(options, "threshold", &mut parsed.threshold)?;
 
     Ok(parsed)
 }
@@ -1127,13 +1120,8 @@ pub(crate) fn delay_options(
     };
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
-
-    if let Some(max_delay_time) = options.get_item("maxDelayTime")? {
-        parsed.max_delay_time = max_delay_time.extract()?;
-    }
-    if let Some(delay_time) = options.get_item("delayTime")? {
-        parsed.delay_time = delay_time.extract()?;
-    }
+    update_option_field(options, "maxDelayTime", &mut parsed.max_delay_time)?;
+    update_option_field(options, "delayTime", &mut parsed.delay_time)?;
 
     Ok(parsed)
 }
@@ -1147,10 +1135,7 @@ pub(crate) fn stereo_panner_options(
     };
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
-
-    if let Some(pan) = options.get_item("pan")? {
-        parsed.pan = pan.extract()?;
-    }
+    update_option_field(options, "pan", &mut parsed.pan)?;
 
     Ok(parsed)
 }
@@ -1164,10 +1149,7 @@ pub(crate) fn channel_merger_options(
     };
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
-
-    if let Some(number_of_inputs) = options.get_item("numberOfInputs")? {
-        parsed.number_of_inputs = number_of_inputs.extract()?;
-    }
+    update_option_field(options, "numberOfInputs", &mut parsed.number_of_inputs)?;
 
     Ok(parsed)
 }
@@ -1181,10 +1163,7 @@ pub(crate) fn channel_splitter_options(
     };
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
-
-    if let Some(number_of_outputs) = options.get_item("numberOfOutputs")? {
-        parsed.number_of_outputs = number_of_outputs.extract()?;
-    }
+    update_option_field(options, "numberOfOutputs", &mut parsed.number_of_outputs)?;
 
     Ok(parsed)
 }
@@ -1231,22 +1210,14 @@ pub(crate) fn biquad_filter_options(
     };
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
-
-    if let Some(type_) = options.get_item("type")? {
+    with_option_item(options, "type", |type_| {
         parsed.type_ = biquad_filter_type_from_str(type_.extract::<&str>()?)?;
-    }
-    if let Some(q) = options.get_item("Q")? {
-        parsed.q = q.extract()?;
-    }
-    if let Some(detune) = options.get_item("detune")? {
-        parsed.detune = detune.extract()?;
-    }
-    if let Some(frequency) = options.get_item("frequency")? {
-        parsed.frequency = frequency.extract()?;
-    }
-    if let Some(gain) = options.get_item("gain")? {
-        parsed.gain = gain.extract()?;
-    }
+        Ok(())
+    })?;
+    update_option_field(options, "Q", &mut parsed.q)?;
+    update_option_field(options, "detune", &mut parsed.detune)?;
+    update_option_field(options, "frequency", &mut parsed.frequency)?;
+    update_option_field(options, "gain", &mut parsed.gain)?;
 
     Ok(parsed)
 }
@@ -1261,16 +1232,13 @@ pub(crate) fn oscillator_options(
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
-    if let Some(type_) = options.get_item("type")? {
+    with_option_item(options, "type", |type_| {
         parsed.type_ = oscillator_type_from_str(type_.extract::<&str>()?)?;
-    }
-    if let Some(frequency) = options.get_item("frequency")? {
-        parsed.frequency = frequency.extract()?;
-    }
-    if let Some(detune) = options.get_item("detune")? {
-        parsed.detune = detune.extract()?;
-    }
-    if let Some(periodic_wave) = options.get_item("periodicWave")? {
+        Ok(())
+    })?;
+    update_option_field(options, "frequency", &mut parsed.frequency)?;
+    update_option_field(options, "detune", &mut parsed.detune)?;
+    with_option_item(options, "periodicWave", |periodic_wave| {
         if !periodic_wave.is_none() {
             parsed.periodic_wave = Some(
                 periodic_wave
@@ -1279,7 +1247,8 @@ pub(crate) fn oscillator_options(
                     .clone(),
             );
         }
-    }
+        Ok(())
+    })?;
 
     Ok(parsed)
 }
@@ -1345,14 +1314,16 @@ pub(crate) fn wave_shaper_options(
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
 
-    if let Some(curve) = options.get_item("curve")? {
+    with_option_item(options, "curve", |curve| {
         if !curve.is_none() {
-            parsed.curve = Some(curve.extract()?);
+            parsed.curve = Some(curve.extract().map_err(Into::<pyo3::PyErr>::into)?);
         }
-    }
-    if let Some(oversample) = options.get_item("oversample")? {
+        Ok(())
+    })?;
+    with_option_item(options, "oversample", |oversample| {
         parsed.oversample = oversample_type_from_str(oversample.extract::<&str>()?)?;
-    }
+        Ok(())
+    })?;
 
     Ok(parsed)
 }
@@ -1410,49 +1381,26 @@ pub(crate) fn panner_options(
     };
 
     update_audio_node_options(options, &mut parsed.audio_node_options)?;
-
-    if let Some(panning_model) = options.get_item("panningModel")? {
+    with_option_item(options, "panningModel", |panning_model| {
         parsed.panning_model = panning_model_type_from_str(panning_model.extract::<&str>()?)?;
-    }
-    if let Some(distance_model) = options.get_item("distanceModel")? {
+        Ok(())
+    })?;
+    with_option_item(options, "distanceModel", |distance_model| {
         parsed.distance_model = distance_model_type_from_str(distance_model.extract::<&str>()?)?;
-    }
-    if let Some(position_x) = options.get_item("positionX")? {
-        parsed.position_x = position_x.extract()?;
-    }
-    if let Some(position_y) = options.get_item("positionY")? {
-        parsed.position_y = position_y.extract()?;
-    }
-    if let Some(position_z) = options.get_item("positionZ")? {
-        parsed.position_z = position_z.extract()?;
-    }
-    if let Some(orientation_x) = options.get_item("orientationX")? {
-        parsed.orientation_x = orientation_x.extract()?;
-    }
-    if let Some(orientation_y) = options.get_item("orientationY")? {
-        parsed.orientation_y = orientation_y.extract()?;
-    }
-    if let Some(orientation_z) = options.get_item("orientationZ")? {
-        parsed.orientation_z = orientation_z.extract()?;
-    }
-    if let Some(ref_distance) = options.get_item("refDistance")? {
-        parsed.ref_distance = ref_distance.extract()?;
-    }
-    if let Some(max_distance) = options.get_item("maxDistance")? {
-        parsed.max_distance = max_distance.extract()?;
-    }
-    if let Some(rolloff_factor) = options.get_item("rolloffFactor")? {
-        parsed.rolloff_factor = rolloff_factor.extract()?;
-    }
-    if let Some(cone_inner_angle) = options.get_item("coneInnerAngle")? {
-        parsed.cone_inner_angle = cone_inner_angle.extract()?;
-    }
-    if let Some(cone_outer_angle) = options.get_item("coneOuterAngle")? {
-        parsed.cone_outer_angle = cone_outer_angle.extract()?;
-    }
-    if let Some(cone_outer_gain) = options.get_item("coneOuterGain")? {
-        parsed.cone_outer_gain = cone_outer_gain.extract()?;
-    }
+        Ok(())
+    })?;
+    update_option_field(options, "positionX", &mut parsed.position_x)?;
+    update_option_field(options, "positionY", &mut parsed.position_y)?;
+    update_option_field(options, "positionZ", &mut parsed.position_z)?;
+    update_option_field(options, "orientationX", &mut parsed.orientation_x)?;
+    update_option_field(options, "orientationY", &mut parsed.orientation_y)?;
+    update_option_field(options, "orientationZ", &mut parsed.orientation_z)?;
+    update_option_field(options, "refDistance", &mut parsed.ref_distance)?;
+    update_option_field(options, "maxDistance", &mut parsed.max_distance)?;
+    update_option_field(options, "rolloffFactor", &mut parsed.rolloff_factor)?;
+    update_option_field(options, "coneInnerAngle", &mut parsed.cone_inner_angle)?;
+    update_option_field(options, "coneOuterAngle", &mut parsed.cone_outer_angle)?;
+    update_option_field(options, "coneOuterGain", &mut parsed.cone_outer_gain)?;
 
     Ok(parsed)
 }
@@ -1465,15 +1413,19 @@ pub(crate) fn periodic_wave_options(
         return Ok(parsed);
     };
 
-    if let Some(real) = options.get_item("real")? {
-        parsed.real = Some(real.extract()?);
-    }
-    if let Some(imag) = options.get_item("imag")? {
-        parsed.imag = Some(imag.extract()?);
-    }
-    if let Some(disable_normalization) = options.get_item("disableNormalization")? {
-        parsed.disable_normalization = disable_normalization.extract()?;
-    }
+    with_option_item(options, "real", |real| {
+        parsed.real = Some(real.extract().map_err(Into::<pyo3::PyErr>::into)?);
+        Ok(())
+    })?;
+    with_option_item(options, "imag", |imag| {
+        parsed.imag = Some(imag.extract().map_err(Into::<pyo3::PyErr>::into)?);
+        Ok(())
+    })?;
+    update_option_field(
+        options,
+        "disableNormalization",
+        &mut parsed.disable_normalization,
+    )?;
 
     Ok(parsed)
 }
@@ -1486,9 +1438,11 @@ pub(crate) fn periodic_wave_constraints(
         return Ok(parsed);
     };
 
-    if let Some(disable_normalization) = constraints.get_item("disableNormalization")? {
-        parsed.disable_normalization = disable_normalization.extract()?;
-    }
+    update_option_field(
+        constraints,
+        "disableNormalization",
+        &mut parsed.disable_normalization,
+    )?;
 
     Ok(parsed)
 }
