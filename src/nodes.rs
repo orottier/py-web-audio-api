@@ -147,68 +147,78 @@ pub(crate) enum ScheduledSourceInner {
     ConstantSource(Arc<Mutex<web_audio_api_rs::node::ConstantSourceNode>>),
 }
 
+fn scheduled_source_start_at<T>(node: &Arc<Mutex<T>>, when: f64) -> PyResult<()>
+where
+    T: web_audio_api_rs::node::AudioScheduledSourceNode,
+{
+    catch_web_audio_panic(|| node.lock().unwrap().start_at(when))
+}
+
+fn scheduled_source_stop_at<T>(node: &Arc<Mutex<T>>, when: f64) -> PyResult<()>
+where
+    T: web_audio_api_rs::node::AudioScheduledSourceNode,
+{
+    catch_web_audio_panic(|| node.lock().unwrap().stop_at(when))
+}
+
+fn scheduled_source_clear_onended<T>(node: &Arc<Mutex<T>>)
+where
+    T: web_audio_api_rs::node::AudioScheduledSourceNode,
+{
+    node.lock().unwrap().clear_onended();
+}
+
+fn scheduled_source_set_onended_registry<T>(
+    node: &Arc<Mutex<T>>,
+    registry: Arc<Mutex<EventTargetRegistry>>,
+) where
+    T: web_audio_api_rs::node::AudioScheduledSourceNode,
+{
+    node.lock().unwrap().set_onended(move |_| {
+        Python::attach(|py| {
+            if let Err(err) =
+                EventTarget::dispatch_from_registry(py, &registry, "ended", None, None)
+            {
+                err.print(py);
+            }
+        });
+    });
+}
+
 impl ScheduledSourceInner {
     pub(crate) fn start_at(&self, when: f64) -> PyResult<()> {
         match self {
-            Self::AudioBufferSource(node) => {
-                catch_web_audio_panic(|| node.lock().unwrap().start_at(when))
-            }
-            Self::Oscillator(node) => catch_web_audio_panic(|| node.lock().unwrap().start_at(when)),
-            Self::ConstantSource(node) => {
-                catch_web_audio_panic(|| node.lock().unwrap().start_at(when))
-            }
+            Self::AudioBufferSource(node) => scheduled_source_start_at(node, when),
+            Self::Oscillator(node) => scheduled_source_start_at(node, when),
+            Self::ConstantSource(node) => scheduled_source_start_at(node, when),
         }
     }
 
     pub(crate) fn stop_at(&self, when: f64) -> PyResult<()> {
         match self {
-            Self::AudioBufferSource(node) => {
-                catch_web_audio_panic(|| node.lock().unwrap().stop_at(when))
-            }
-            Self::Oscillator(node) => catch_web_audio_panic(|| node.lock().unwrap().stop_at(when)),
-            Self::ConstantSource(node) => {
-                catch_web_audio_panic(|| node.lock().unwrap().stop_at(when))
-            }
+            Self::AudioBufferSource(node) => scheduled_source_stop_at(node, when),
+            Self::Oscillator(node) => scheduled_source_stop_at(node, when),
+            Self::ConstantSource(node) => scheduled_source_stop_at(node, when),
         }
     }
 
     pub(crate) fn clear_onended(&self) {
         match self {
-            Self::AudioBufferSource(node) => node.lock().unwrap().clear_onended(),
-            Self::Oscillator(node) => node.lock().unwrap().clear_onended(),
-            Self::ConstantSource(node) => node.lock().unwrap().clear_onended(),
+            Self::AudioBufferSource(node) => scheduled_source_clear_onended(node),
+            Self::Oscillator(node) => scheduled_source_clear_onended(node),
+            Self::ConstantSource(node) => scheduled_source_clear_onended(node),
         }
     }
 
     pub(crate) fn set_onended_registry(&self, registry: Arc<Mutex<EventTargetRegistry>>) {
         match self {
-            Self::AudioBufferSource(node) => node.lock().unwrap().set_onended(move |_| {
-                Python::attach(|py| {
-                    if let Err(err) =
-                        EventTarget::dispatch_from_registry(py, &registry, "ended", None, None)
-                    {
-                        err.print(py);
-                    }
-                });
-            }),
-            Self::Oscillator(node) => node.lock().unwrap().set_onended(move |_| {
-                Python::attach(|py| {
-                    if let Err(err) =
-                        EventTarget::dispatch_from_registry(py, &registry, "ended", None, None)
-                    {
-                        err.print(py);
-                    }
-                });
-            }),
-            Self::ConstantSource(node) => node.lock().unwrap().set_onended(move |_| {
-                Python::attach(|py| {
-                    if let Err(err) =
-                        EventTarget::dispatch_from_registry(py, &registry, "ended", None, None)
-                    {
-                        err.print(py);
-                    }
-                });
-            }),
+            Self::AudioBufferSource(node) => {
+                scheduled_source_set_onended_registry(node, Arc::clone(&registry))
+            }
+            Self::Oscillator(node) => {
+                scheduled_source_set_onended_registry(node, Arc::clone(&registry))
+            }
+            Self::ConstantSource(node) => scheduled_source_set_onended_registry(node, registry),
         }
     }
 }
