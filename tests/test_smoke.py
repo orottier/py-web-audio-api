@@ -1242,6 +1242,16 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(panner.coneOuterGain, 0.25)
         self.assertEqual(panner.channelCountMode, "clamped-max")
 
+        panner.setPosition(4.0, 5.0, 6.0)
+        panner.setOrientation(0.0, 0.0, -1.0)
+
+        self.assertEqual(panner.positionX.value, 4.0)
+        self.assertEqual(panner.positionY.value, 5.0)
+        self.assertEqual(panner.positionZ.value, 6.0)
+        self.assertEqual(panner.orientationX.value, 0.0)
+        self.assertEqual(panner.orientationY.value, 0.0)
+        self.assertEqual(panner.orientationZ.value, -1.0)
+
     def test_create_panner_works(self):
         ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
         panner = ctx.createPanner()

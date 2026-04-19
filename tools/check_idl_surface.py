@@ -44,12 +44,6 @@ EXCLUDED_MEMBERS = {
             "setSinkId": "Deferred until the Rust API shape matches.",
         },
     },
-    "PannerNode": {
-        "methods": {
-            "setPosition": "Not modeled in the current binding.",
-            "setOrientation": "Not modeled in the current binding.",
-        }
-    },
 }
 
 

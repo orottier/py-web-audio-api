@@ -2843,6 +2843,16 @@ impl PannerNode {
     pub(crate) fn set_cone_outer_gain(&mut self, value: f64) -> PyResult<()> {
         catch_web_audio_panic(|| self.0.lock().unwrap().set_cone_outer_gain(value))
     }
+
+    #[pyo3(name = "setPosition")]
+    pub(crate) fn set_position(&self, x: f32, y: f32, z: f32) -> PyResult<()> {
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_position(x, y, z))
+    }
+
+    #[pyo3(name = "setOrientation")]
+    pub(crate) fn set_orientation(&self, x: f32, y: f32, z: f32) -> PyResult<()> {
+        catch_web_audio_panic(|| self.0.lock().unwrap().set_orientation(x, y, z))
+    }
 }
 
 #[pyclass(extends = AudioScheduledSourceNode)]
