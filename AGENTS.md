@@ -11,6 +11,11 @@
 - Keep internal helpers next to the code they support; do not reintroduce a generic `options.rs` or `wrappers.rs` dumping ground.
 - Reuse the internal node factory helpers in the related module instead of open-coding new wrapper assembly.
 - Reuse the shared option parsing helpers for `AudioNodeOptions` and per-type dict parsing; do not reintroduce one-off parsing patterns without a strong reason.
+- Prefer small local helpers over new frameworks when reducing repetition in handwritten code. If a family is small or structurally special, keep it handwritten and tighten the local helper layer instead of pushing it into generic machinery.
+- Keep media/worklet/script infrastructure explicit. These areas often look repetitive at first glance, but the custom lifecycle or retained-object behavior is usually real.
+- When adding IDL-surface checks, keep the checker structural and keep the exclusion list explicit, small, and reasoned. Unsupported items should fail the check unless they are intentionally excluded with a short explanation.
+- Treat presence in the support/coverage config as the source of truth for what participates in a generated or checked path; do not keep redundant status fields when absence already carries the meaning.
+- Watch for acronym-heavy names when deriving helper names (`IIR`, `HRTF`, etc.). Shared naming helpers should normalize these consistently so the manifest and code do not grow one-off overrides.
 - When testing wrapper types in Rust, exercise the wrapper's binding-shaped API, not the underlying raw Rust API with wrapper signatures mixed in. If the goal is to test raw crate behavior, test the raw crate object directly instead.
 - Keep direct constructors and `createX()` factories aligned where the IDL exposes both.
 - Prefer explicit `NotImplementedError` stubs to misleading partial behavior when a spec feature depends on unmodeled async/event/media/worklet infrastructure.
@@ -18,6 +23,8 @@
 - When adding or changing examples, make sure README points to them and that the examples match the current public Python API instead of test-only helpers.
 - For async Python tests, create awaitables inside a running event loop, typically via `asyncio.run(...)` around a small coroutine helper.
 - For realtime tests, use `AudioContext({"sinkId": "none"})` so CI and local headless runs stay deterministic.
+- Expect the intentional worklet processor-error test to print a Rust panic log during the Python suite. That log is noisy but currently expected; do not treat it as a test failure by itself.
+- `uv venv` may reuse an existing `.venv` without `pip`; if wheel-building or install steps rely on `pip`, repair the environment first with `.venv/bin/python -m ensurepip --upgrade`.
 - Before finishing, run:
   - `cargo fmt --check`
   - `cargo test`

@@ -173,9 +173,26 @@ maturin develop
 .venv/bin/python -m unittest discover -s tests
 ```
 
+Run the IDL surface checker:
+
+```bash
+.venv/bin/python tools/check_idl_surface.py web-audio-api-idl.txt
+```
+
+The checker reads the IDL file, imports `web_audio_api`, and verifies that the expected classes,
+methods, and properties are present on the Python surface. It is intentionally structural: known
+unsupported or differently modeled spec items live in a small explicit exclusion list inside
+[tools/check_idl_surface.py](/Users/robotto/Projects/py-web-audio-api/tools/check_idl_surface.py).
+
+For more detail, including skipped exclusions, use:
+
+```bash
+.venv/bin/python tools/check_idl_surface.py web-audio-api-idl.txt --verbose
+```
+
 ## Release
 
-Update the version in `pyproject.toml`.
+Update the version in `Cargo.toml`.
 Create and push a tag matching the release version:
 
 ```bash
