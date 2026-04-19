@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import types
 import unittest
 
 import web_audio_api
@@ -95,6 +96,60 @@ class IdlSurfaceScriptTest(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertIn("IDL surface check passed.", completed.stdout)
+
+    def test_reverse_check_passes_for_current_module_with_allowlist(self):
+        interfaces = check_idl_surface.parse_interfaces(IDL_PATH.read_text())
+        result = check_idl_surface.check_reverse_surface(web_audio_api, interfaces)
+
+        self.assertTrue(
+            result.ok, check_idl_surface.format_reverse_result(result, verbose=True)
+        )
+        self.assertGreater(len(result.allowed_module_names), 0)
+        self.assertGreater(len(result.allowed_attributes), 0)
+        self.assertGreater(len(result.allowed_methods), 0)
+
+    def test_reverse_check_reports_unexpected_public_names(self):
+        interfaces = check_idl_surface.parse_interfaces(
+            textwrap.dedent(
+                """
+                interface GainNode : AudioNode {
+                    readonly attribute AudioParam gain;
+                };
+                """
+            )
+        )
+
+        class FakeGainNode:
+            gain = property(lambda self: None)
+            definitelyExtraAttribute = 1
+
+            def definitelyExtraMethod(self):
+                return None
+
+        fake_module = types.SimpleNamespace(
+            GainNode=FakeGainNode,
+            definitelyExtraExport=object(),
+        )
+
+        result = check_idl_surface.check_reverse_surface(fake_module, interfaces)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.unexpected_module_names, ("definitelyExtraExport",))
+        self.assertIn(
+            ("GainNode", "definitelyExtraAttribute"), result.unexpected_attributes
+        )
+        self.assertIn(("GainNode", "definitelyExtraMethod"), result.unexpected_methods)
+
+    def test_cli_succeeds_for_current_idl_with_reverse_check(self):
+        completed = subprocess.run(
+            [sys.executable, str(TOOLS_PATH), str(IDL_PATH), "--reverse"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("Reverse surface check passed.", completed.stdout)
 
     def test_cli_fails_for_missing_interface(self):
         with tempfile.NamedTemporaryFile("w", suffix=".idl", delete=False) as handle:
