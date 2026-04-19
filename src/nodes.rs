@@ -47,6 +47,17 @@ pub(crate) fn options_dict<'py>(
         .transpose()
 }
 
+pub(crate) fn required_option_item<'py>(
+    options: &'py Bound<'py, PyAny>,
+    type_name: &str,
+    field_name: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    let options = options_dict(Some(options), type_name)?.expect("options should be present");
+    options.get_item(field_name)?.ok_or_else(|| {
+        pyo3::exceptions::PyTypeError::new_err(format!("{type_name}.{field_name} is required"))
+    })
+}
+
 pub(crate) fn update_audio_node_options(
     options: &Bound<'_, PyDict>,
     parsed: &mut web_audio_api_rs::node::AudioNodeOptions,
@@ -261,6 +272,43 @@ where
     Py::new(py, init_audio_node(node, wrap))
 }
 
+#[cfg(test)]
+pub(crate) fn wrap_retained_audio_node<T, P, Payload>(
+    node: T,
+    payload: Payload,
+    wrap: impl FnOnce(Payload) -> P,
+) -> (P, AudioNode)
+where
+    T: RsAudioNode + Send + 'static,
+{
+    wrap_audio_node(node, |_| wrap(payload))
+}
+
+pub(crate) fn init_retained_audio_node<T, P, Payload>(
+    node: T,
+    payload: Payload,
+    wrap: impl FnOnce(Payload) -> P,
+) -> PyClassInitializer<P>
+where
+    T: RsAudioNode + Send + 'static,
+    P: PyClass<BaseType = AudioNode>,
+{
+    init_audio_node(node, |_| wrap(payload))
+}
+
+pub(crate) fn new_retained_audio_node_py<T, P, Payload>(
+    py: Python<'_>,
+    node: T,
+    payload: Payload,
+    wrap: impl FnOnce(Payload) -> P,
+) -> PyResult<Py<P>>
+where
+    T: RsAudioNode + Send + 'static,
+    P: PyClass<BaseType = AudioNode>,
+{
+    new_audio_node_py(py, node, |_| wrap(payload))
+}
+
 pub(crate) fn wrap_scheduled_source_node<T, P>(
     node: T,
     scheduled: impl FnOnce(Arc<Mutex<T>>) -> ScheduledSourceInner,
@@ -315,9 +363,11 @@ pub(crate) fn media_element_audio_source_node_parts(
     let node = catch_web_audio_panic_result(|| {
         ctx.create_media_element_source(&mut media_element.0.lock().unwrap())
     })?;
-    Ok(wrap_audio_node(node, |_| MediaElementAudioSourceNode {
-        media_element: media_element.clone(),
-    }))
+    Ok(wrap_retained_audio_node(
+        node,
+        media_element.clone(),
+        |media_element| MediaElementAudioSourceNode { media_element },
+    ))
 }
 
 pub(crate) fn media_element_audio_source_node(
@@ -327,9 +377,11 @@ pub(crate) fn media_element_audio_source_node(
     let node = catch_web_audio_panic_result(|| {
         ctx.create_media_element_source(&mut media_element.0.lock().unwrap())
     })?;
-    Ok(init_audio_node(node, |_| MediaElementAudioSourceNode {
-        media_element: media_element.clone(),
-    }))
+    Ok(init_retained_audio_node(
+        node,
+        media_element.clone(),
+        |media_element| MediaElementAudioSourceNode { media_element },
+    ))
 }
 
 pub(crate) fn media_element_audio_source_node_py(
@@ -340,8 +392,8 @@ pub(crate) fn media_element_audio_source_node_py(
     let node = catch_web_audio_panic_result(|| {
         ctx.create_media_element_source(&mut media_element.0.lock().unwrap())
     })?;
-    new_audio_node_py(py, node, |_| MediaElementAudioSourceNode {
-        media_element: media_element.clone(),
+    new_retained_audio_node_py(py, node, media_element.clone(), |media_element| {
+        MediaElementAudioSourceNode { media_element }
     })
 }
 
@@ -387,12 +439,11 @@ pub(crate) fn media_stream_audio_source_node_parts(
     media_stream: &web_audio_api_rs::media_streams::MediaStream,
 ) -> (MediaStreamAudioSourceNode, AudioNode) {
     let media_stream = MediaStream(media_stream.clone());
-    wrap_audio_node(ctx.create_media_stream_source(&media_stream.0), |inner| {
-        let _ = inner;
-        MediaStreamAudioSourceNode {
-            media_stream: media_stream.clone(),
-        }
-    })
+    wrap_retained_audio_node(
+        ctx.create_media_stream_source(&media_stream.0),
+        media_stream,
+        |media_stream| MediaStreamAudioSourceNode { media_stream },
+    )
 }
 
 pub(crate) fn media_stream_audio_source_node(
@@ -400,12 +451,11 @@ pub(crate) fn media_stream_audio_source_node(
     media_stream: &web_audio_api_rs::media_streams::MediaStream,
 ) -> PyClassInitializer<MediaStreamAudioSourceNode> {
     let media_stream = MediaStream(media_stream.clone());
-    init_audio_node(ctx.create_media_stream_source(&media_stream.0), |inner| {
-        let _ = inner;
-        MediaStreamAudioSourceNode {
-            media_stream: media_stream.clone(),
-        }
-    })
+    init_retained_audio_node(
+        ctx.create_media_stream_source(&media_stream.0),
+        media_stream,
+        |media_stream| MediaStreamAudioSourceNode { media_stream },
+    )
 }
 
 pub(crate) fn media_stream_audio_source_node_py(
@@ -414,11 +464,12 @@ pub(crate) fn media_stream_audio_source_node_py(
     media_stream: &web_audio_api_rs::media_streams::MediaStream,
 ) -> PyResult<Py<MediaStreamAudioSourceNode>> {
     let media_stream = MediaStream(media_stream.clone());
-    new_audio_node_py(py, ctx.create_media_stream_source(&media_stream.0), |_| {
-        MediaStreamAudioSourceNode {
-            media_stream: media_stream.clone(),
-        }
-    })
+    new_retained_audio_node_py(
+        py,
+        ctx.create_media_stream_source(&media_stream.0),
+        media_stream,
+        |media_stream| MediaStreamAudioSourceNode { media_stream },
+    )
 }
 
 #[cfg(test)]
@@ -427,11 +478,10 @@ pub(crate) fn media_stream_track_audio_source_node_parts(
     media_stream_track: &web_audio_api_rs::media_streams::MediaStreamTrack,
 ) -> (MediaStreamTrackAudioSourceNode, AudioNode) {
     let media_stream_track = MediaStreamTrack(media_stream_track.clone());
-    wrap_audio_node(
+    wrap_retained_audio_node(
         ctx.create_media_stream_track_source(&media_stream_track.0),
-        |_| MediaStreamTrackAudioSourceNode {
-            media_stream_track: media_stream_track.clone(),
-        },
+        media_stream_track,
+        |media_stream_track| MediaStreamTrackAudioSourceNode { media_stream_track },
     )
 }
 
@@ -440,11 +490,10 @@ pub(crate) fn media_stream_track_audio_source_node(
     media_stream_track: &web_audio_api_rs::media_streams::MediaStreamTrack,
 ) -> PyClassInitializer<MediaStreamTrackAudioSourceNode> {
     let media_stream_track = MediaStreamTrack(media_stream_track.clone());
-    init_audio_node(
+    init_retained_audio_node(
         ctx.create_media_stream_track_source(&media_stream_track.0),
-        |_| MediaStreamTrackAudioSourceNode {
-            media_stream_track: media_stream_track.clone(),
-        },
+        media_stream_track,
+        |media_stream_track| MediaStreamTrackAudioSourceNode { media_stream_track },
     )
 }
 
@@ -454,12 +503,11 @@ pub(crate) fn media_stream_track_audio_source_node_py(
     media_stream_track: &web_audio_api_rs::media_streams::MediaStreamTrack,
 ) -> PyResult<Py<MediaStreamTrackAudioSourceNode>> {
     let media_stream_track = MediaStreamTrack(media_stream_track.clone());
-    new_audio_node_py(
+    new_retained_audio_node_py(
         py,
         ctx.create_media_stream_track_source(&media_stream_track.0),
-        |_| MediaStreamTrackAudioSourceNode {
-            media_stream_track: media_stream_track.clone(),
-        },
+        media_stream_track,
+        |media_stream_track| MediaStreamTrackAudioSourceNode { media_stream_track },
     )
 }
 
@@ -1854,17 +1902,9 @@ impl MediaElementAudioSourceNode {
         ctx: PyRef<'_, AudioContext>,
         options: &Bound<'_, PyAny>,
     ) -> PyResult<PyClassInitializer<Self>> {
-        let options = options.cast::<PyDict>().map_err(|_| {
-            pyo3::exceptions::PyTypeError::new_err("MediaElementAudioSourceOptions must be a dict")
-        })?;
-        let media_element = options
-            .get_item("mediaElement")?
-            .ok_or_else(|| {
-                pyo3::exceptions::PyTypeError::new_err(
-                    "MediaElementAudioSourceOptions.mediaElement is required",
-                )
-            })?
-            .extract::<PyRef<'_, MediaElement>>()?;
+        let media_element =
+            required_option_item(options, "MediaElementAudioSourceOptions", "mediaElement")?
+                .extract::<PyRef<'_, MediaElement>>()?;
 
         media_element_audio_source_node(ctx.0.as_ref(), &media_element)
     }
@@ -1882,17 +1922,9 @@ impl MediaStreamAudioSourceNode {
         ctx: PyRef<'_, AudioContext>,
         options: &Bound<'_, PyAny>,
     ) -> PyResult<PyClassInitializer<Self>> {
-        let options = options.cast::<PyDict>().map_err(|_| {
-            pyo3::exceptions::PyTypeError::new_err("MediaStreamAudioSourceOptions must be a dict")
-        })?;
-        let media_stream = options
-            .get_item("mediaStream")?
-            .ok_or_else(|| {
-                pyo3::exceptions::PyTypeError::new_err(
-                    "MediaStreamAudioSourceOptions.mediaStream is required",
-                )
-            })?
-            .extract::<PyRef<'_, MediaStream>>()?;
+        let media_stream =
+            required_option_item(options, "MediaStreamAudioSourceOptions", "mediaStream")?
+                .extract::<PyRef<'_, MediaStream>>()?;
 
         Ok(media_stream_audio_source_node(
             ctx.0.as_ref(),
@@ -1913,19 +1945,12 @@ impl MediaStreamTrackAudioSourceNode {
         ctx: PyRef<'_, AudioContext>,
         options: &Bound<'_, PyAny>,
     ) -> PyResult<PyClassInitializer<Self>> {
-        let options = options.cast::<PyDict>().map_err(|_| {
-            pyo3::exceptions::PyTypeError::new_err(
-                "MediaStreamTrackAudioSourceOptions must be a dict",
-            )
-        })?;
-        let media_stream_track = options
-            .get_item("mediaStreamTrack")?
-            .ok_or_else(|| {
-                pyo3::exceptions::PyTypeError::new_err(
-                    "MediaStreamTrackAudioSourceOptions.mediaStreamTrack is required",
-                )
-            })?
-            .extract::<PyRef<'_, MediaStreamTrack>>()?;
+        let media_stream_track = required_option_item(
+            options,
+            "MediaStreamTrackAudioSourceOptions",
+            "mediaStreamTrack",
+        )?
+        .extract::<PyRef<'_, MediaStreamTrack>>()?;
 
         Ok(media_stream_track_audio_source_node(
             ctx.0.as_ref(),
