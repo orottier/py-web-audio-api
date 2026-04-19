@@ -142,7 +142,7 @@ class IdlSurfaceScriptTest(unittest.TestCase):
 
     def test_cli_succeeds_for_current_idl_with_reverse_check(self):
         completed = subprocess.run(
-            [sys.executable, str(TOOLS_PATH), str(IDL_PATH), "--reverse"],
+            [sys.executable, str(TOOLS_PATH), str(IDL_PATH), "--both-directions"],
             check=False,
             capture_output=True,
             text=True,

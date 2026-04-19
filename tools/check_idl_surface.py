@@ -490,9 +490,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Print skipped interfaces and members as well as missing ones.",
     )
     parser.add_argument(
-        "--reverse",
+        "--both-directions",
         action="store_true",
-        help="Also check that public Python surface outside the IDL is explicitly allowlisted.",
+        help="Run both the forward IDL check and the reverse public-surface check.",
     )
     return parser.parse_args(argv)
 
@@ -506,7 +506,7 @@ def main(argv: list[str] | None = None) -> int:
     print(format_result(result, verbose=args.verbose))
 
     reverse_ok = True
-    if args.reverse:
+    if args.both_directions:
         reverse_result = check_reverse_surface(module, interfaces)
         print("")
         print(format_reverse_result(reverse_result, verbose=args.verbose))
