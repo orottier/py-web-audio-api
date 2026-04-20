@@ -612,6 +612,18 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
         processor_name = self.unique_worklet_name("messages")
         received = []
+        sentinel_port = object()
+        missing = object()
+        old_port = globals().get("port", missing)
+
+        def restore_port():
+            if old_port is missing:
+                globals().pop("port", None)
+            else:
+                globals()["port"] = old_port
+
+        globals()["port"] = sentinel_port
+        self.addCleanup(restore_port)
 
         class MessageProcessor(web_audio_api.AudioWorkletProcessor):
             name = processor_name
@@ -621,12 +633,13 @@ class WebAudioApiSmokeTest(unittest.TestCase):
 
             def onmessage(self, value):
                 self.multiplier = float(value["multiplier"])
+                port.postMessage({"echo": self.multiplier})
 
             def process(self, inputs, outputs, parameters):
                 for channel in outputs[0]:
                     for i in range(len(channel)):
                         channel[i] = self.multiplier
-                self.port.postMessage({"seen": self.multiplier})
+                port.postMessage({"seen": self.multiplier})
                 return False
 
         ctx.audioWorklet.addModule(MessageProcessor)
@@ -643,8 +656,10 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         samples = rendered.getChannelData(0)
 
         self.assertTrue(all(abs(sample - 0.75) < 1e-6 for sample in samples[:128]))
-        self.assertGreaterEqual(len(received), 1)
-        self.assertEqual(received[0]["seen"], 0.75)
+        self.assertGreaterEqual(len(received), 2)
+        self.assertEqual(received[0]["echo"], 0.75)
+        self.assertEqual(received[1]["seen"], 0.75)
+        self.assertIs(globals()["port"], sentinel_port)
 
     def test_audio_worklet_invalid_message_payload_raises(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)

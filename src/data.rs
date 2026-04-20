@@ -914,6 +914,7 @@ fn dispatch_message_to_port_registry(
 struct PythonWorkletInstance {
     processor: Py<PyAny>,
     processor_globals: Py<PyDict>,
+    processor_python_port: Py<PyAny>,
     processor_port: Arc<MessagePortShared>,
 }
 
@@ -933,23 +934,32 @@ fn processor_globals_for_instance<'py>(
 fn with_patched_processor_globals<T>(
     py: Python<'_>,
     globals: &Bound<'_, PyDict>,
-    scope: PythonWorkletScopeValues,
+    scope: Option<PythonWorkletScopeValues>,
+    extra_globals: &[(&str, Py<PyAny>)],
     f: impl FnOnce() -> PyResult<T>,
 ) -> PyResult<T> {
-    let names = [
-        (
-            "sampleRate",
-            scope.sample_rate.into_pyobject(py)?.unbind().into_any(),
-        ),
-        (
-            "currentTime",
-            scope.current_time.into_pyobject(py)?.unbind().into_any(),
-        ),
-        (
-            "currentFrame",
-            scope.current_frame.into_pyobject(py)?.unbind().into_any(),
-        ),
-    ];
+    let mut names = Vec::new();
+    if let Some(scope) = scope {
+        names.extend([
+            (
+                "sampleRate",
+                scope.sample_rate.into_pyobject(py)?.unbind().into_any(),
+            ),
+            (
+                "currentTime",
+                scope.current_time.into_pyobject(py)?.unbind().into_any(),
+            ),
+            (
+                "currentFrame",
+                scope.current_frame.into_pyobject(py)?.unbind().into_any(),
+            ),
+        ]);
+    }
+    names.extend(
+        extra_globals
+            .iter()
+            .map(|(name, value)| (*name, value.clone_ref(py))),
+    );
 
     let mut previous = Vec::with_capacity(names.len());
     for (name, value) in &names {
@@ -999,6 +1009,7 @@ fn worklet_runtime_loop(receiver: Receiver<WorkletCommand>, global_port: Arc<Mes
                     let instance = registration.class.bind(py).call1((options_py,))?;
                     let processor_globals = processor_globals_for_instance(py, &instance)?;
                     let port = MessagePort::new_py(py, Arc::clone(&processor_port))?;
+                    let processor_python_port = port.clone_ref(py).into_any();
                     let mut base = instance.extract::<PyRefMut<'_, AudioWorkletProcessor>>()?;
                     base.port = Some(port);
                     drop(base);
@@ -1007,6 +1018,7 @@ fn worklet_runtime_loop(receiver: Receiver<WorkletCommand>, global_port: Arc<Mes
                         PythonWorkletInstance {
                             processor: instance.unbind(),
                             processor_globals,
+                            processor_python_port,
                             processor_port,
                         },
                     );
@@ -1052,7 +1064,8 @@ fn worklet_runtime_loop(receiver: Receiver<WorkletCommand>, global_port: Arc<Mes
                     let keepalive = with_patched_processor_globals(
                         py,
                         &instance.processor_globals.bind(py),
-                        scope,
+                        Some(scope),
+                        &[("port", instance.processor_python_port.clone_ref(py))],
                         || {
                             instance
                                 .processor
@@ -1087,10 +1100,19 @@ fn worklet_runtime_loop(receiver: Receiver<WorkletCommand>, global_port: Arc<Mes
                     };
                     let value_py = basic_message_value_to_py(py, &value)?;
                     if instance.processor.bind(py).hasattr("onmessage")? {
-                        instance
-                            .processor
-                            .bind(py)
-                            .call_method1("onmessage", (value_py.clone_ref(py),))?;
+                        with_patched_processor_globals(
+                            py,
+                            &instance.processor_globals.bind(py),
+                            None,
+                            &[("port", instance.processor_python_port.clone_ref(py))],
+                            || {
+                                instance
+                                    .processor
+                                    .bind(py)
+                                    .call_method1("onmessage", (value_py.clone_ref(py),))?;
+                                Ok(())
+                            },
+                        )?;
                     }
                     dispatch_message_to_port_registry(py, &instance.processor_port, value)?;
                     Ok(())
