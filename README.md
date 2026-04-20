@@ -31,8 +31,11 @@ Runnable example scripts live in [examples](/Users/robotto/Projects/py-web-audio
 - [examples/worklet_white_noise.py](/Users/robotto/Projects/py-web-audio-api/examples/worklet_white_noise.py): `AudioWorklet` white noise with message-based volume changes
 - [examples/analyser_meter.py](/Users/robotto/Projects/py-web-audio-api/examples/analyser_meter.py): analyser-based terminal level meter
 - [examples/buffer_source.py](/Users/robotto/Projects/py-web-audio-api/examples/buffer_source.py): build and play a short buffer
+- [examples/media_element.py](/Users/robotto/Projects/py-web-audio-api/examples/media_element.py): play an audio file through `MediaElementAudioSourceNode`
 - [examples/mic_input.py](/Users/robotto/Projects/py-web-audio-api/examples/mic_input.py): microphone input into a graph
 - [examples/recorder.py](/Users/robotto/Projects/py-web-audio-api/examples/recorder.py): record graph output to a WAV file
+- [examples/stream_in.py](/Users/robotto/Projects/py-web-audio-api/examples/stream_in.py): stream Python-generated chunks into a `MediaStreamAudioSourceNode`
+- [examples/stream_out.py](/Users/robotto/Projects/py-web-audio-api/examples/stream_out.py): read graph output back into Python from a `MediaStreamAudioDestinationNode`
 
 Run an example after `maturin develop` (see Local Development section)
 
