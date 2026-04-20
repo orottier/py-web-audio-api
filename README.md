@@ -36,6 +36,7 @@ Runnable example scripts live in [examples](/Users/robotto/Projects/py-web-audio
 - [examples/recorder.py](/Users/robotto/Projects/py-web-audio-api/examples/recorder.py): record graph output to a WAV file
 - [examples/stream_in.py](/Users/robotto/Projects/py-web-audio-api/examples/stream_in.py): stream Python-generated chunks into a `MediaStreamAudioSourceNode`
 - [examples/stream_out.py](/Users/robotto/Projects/py-web-audio-api/examples/stream_out.py): read graph output back into Python from a `MediaStreamAudioDestinationNode`
+- [examples/vu_meter.py](/Users/robotto/Projects/py-web-audio-api/examples/vu_meter.py): CLI worklet-based VU meter driven by processor port messages
 
 Run an example after `maturin develop` (see Local Development section)
 
