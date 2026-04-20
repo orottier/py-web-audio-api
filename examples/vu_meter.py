@@ -17,19 +17,19 @@ class VUMeterProcessor(web_audio_api.AudioWorkletProcessor):
         self._update_interval_ms = float(
             processor_options.get("updateIntervalInMS", 50.0)
         )
-        self._next_update_frame = self.interval_in_frames
+        self._next_update_frame = None
 
         def handle_message(value):
             if isinstance(value, dict) and "updateIntervalInMS" in value:
                 self._update_interval_ms = float(value["updateIntervalInMS"])
+                self._next_update_frame = None
 
         self.port.onmessage = handle_message
 
-    @property
-    def interval_in_frames(self):
-        return self._update_interval_ms / 1000.0 * sampleRate
-
     def process(self, inputs, outputs, parameters):
+        interval_in_frames = self._update_interval_ms / 1000.0 * sampleRate
+        if self._next_update_frame is None:
+            self._next_update_frame = interval_in_frames
         if inputs and inputs[0]:
             samples = inputs[0][0]
             if samples:
@@ -38,7 +38,7 @@ class VUMeterProcessor(web_audio_api.AudioWorkletProcessor):
                 self._volume = max(rms, self._volume * SMOOTHING_FACTOR)
                 self._next_update_frame -= len(samples)
                 if self._next_update_frame < 0:
-                    self._next_update_frame += self.interval_in_frames
+                    self._next_update_frame += interval_in_frames
                     port.postMessage({"volume": self._volume})
         return self._volume >= MINIMUM_VALUE
 
