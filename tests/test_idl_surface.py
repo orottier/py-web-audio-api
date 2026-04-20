@@ -140,6 +140,33 @@ class IdlSurfaceScriptTest(unittest.TestCase):
         )
         self.assertIn(("GainNode", "definitelyExtraMethod"), result.unexpected_methods)
 
+    def test_reverse_check_allows_module_self_alias(self):
+        interfaces = check_idl_surface.parse_interfaces(
+            textwrap.dedent(
+                """
+                interface GainNode : AudioNode {
+                    readonly attribute AudioParam gain;
+                };
+                """
+            )
+        )
+
+        class FakeGainNode:
+            gain = property(lambda self: None)
+
+        fake_module = types.SimpleNamespace(
+            GainNode=FakeGainNode,
+            web_audio_api=object(),
+        )
+
+        result = check_idl_surface.check_reverse_surface(fake_module, interfaces)
+
+        self.assertTrue(result.ok, check_idl_surface.format_reverse_result(result, verbose=True))
+        self.assertIn(
+            ("web_audio_api", "Installed-wheel import path may expose a module self-alias."),
+            result.allowed_module_names,
+        )
+
     def test_cli_succeeds_for_current_idl_with_reverse_check(self):
         completed = subprocess.run(
             [sys.executable, str(TOOLS_PATH), str(IDL_PATH), "--both-directions"],

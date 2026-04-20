@@ -66,6 +66,7 @@ ALLOWED_PUBLIC_MODULE_EXTRAS = {
     "enumerateDevicesSync": "Binding-level synchronous convenience export for media-device enumeration.",
     "getUserMedia": "Binding-level convenience export for media capture.",
     "getUserMediaSync": "Binding-level synchronous convenience export for media capture.",
+    "web_audio_api": "Installed-wheel import path may expose a module self-alias.",
 }
 
 ALLOWED_PUBLIC_MEMBERS = {
