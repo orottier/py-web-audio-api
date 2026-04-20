@@ -25,6 +25,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - name: Run Rust tests
         run: cargo test
+      - name: Run Clippy
+        run: cargo clippy --all-targets
       - name: Build wheel
         run: python -m pip wheel . --no-deps --wheel-dir dist
       - name: Install wheel

@@ -25,6 +25,7 @@
 - `uv venv` may reuse an existing `.venv` without `pip`; if wheel-building or install steps rely on `pip`, repair the environment first with `.venv/bin/python -m ensurepip --upgrade`.
 - Before finishing, run:
   - `cargo fmt --check`
+  - `cargo clippy --all-targets`
   - `cargo test`
   - `uv venv --python 3.11 .venv`
   - `.venv/bin/python -m pip install maturin`
