@@ -34,45 +34,17 @@ Runnable example scripts live in [examples](/Users/robotto/Projects/py-web-audio
 - [examples/mic_input.py](/Users/robotto/Projects/py-web-audio-api/examples/mic_input.py): microphone input into a graph
 - [examples/recorder.py](/Users/robotto/Projects/py-web-audio-api/examples/recorder.py): record graph output to a WAV file
 
-Run an example after `maturin develop`:
+Run an example after `maturin develop` (see Local Development section)
 
 ```bash
 .venv/bin/python examples/osc_gain.py
 ```
 
-## Advanced usage
+## Async Methods
 
-The binding now exposes asyncio-native awaitables for the Web Audio methods that are async in
-`web-audio-api-rs`.
-
-This includes:
-
-- `AudioContext.resume()`
-- `AudioContext.suspend()`
-- `AudioContext.close()`
-- `OfflineAudioContext.startRendering()`
-- `OfflineAudioContext.resume()`
-- `OfflineAudioContext.suspend(suspendTime)`
-- `BaseAudioContext.decodeAudioData(...)`
-
-Use them inside a running event loop:
-
-```python
-import asyncio
-import web_audio_api
-
-
-async def main():
-    ctx = web_audio_api.AudioContext({"sinkId": "none"})
-    await ctx.resume()
-    await ctx.suspend()
-    await ctx.close()
-
-
-asyncio.run(main())
-```
-
-Offline rendering is also async:
+The binding exposes asyncio-native awaitables for the Web Audio methods that are async in
+`web-audio-api-rs`. Such as `AudioContext.resume()` and
+`OfflineAudioContext::startRendering()`.
 
 ```python
 import asyncio
@@ -117,11 +89,7 @@ async def main():
 asyncio.run(main())
 ```
 
-One practical detail: create these awaitables inside the running loop. In other words, prefer
-`asyncio.run(main())` with the Web Audio calls inside `main()`, instead of constructing an
-awaitable earlier and awaiting it later.
-
-## Local development
+## Local Development
 
 Create and activate a virtual environment:
 
@@ -147,8 +115,6 @@ osc.connect(ctx.destination)
 osc.start()
 osc.frequency.value = 300
 ```
-
-The scripts in [examples](/Users/robotto/Projects/py-web-audio-api/examples) are a good next step after this quick smoke test.
 
 ## Build
 
@@ -176,29 +142,19 @@ maturin develop
 Run the IDL surface checker:
 
 ```bash
-.venv/bin/python tools/check_idl_surface.py web-audio-api-idl.txt
+.venv/bin/python tools/check_idl_surface.py web-audio-api-idl.txt --both-directions
 ```
 
 The checker reads the IDL file, imports `web_audio_api`, and verifies that the expected classes,
-methods, and properties are present on the Python surface. It is intentionally structural: known
-unsupported or differently modeled spec items live in a small explicit exclusion list inside
-[tools/check_idl_surface.py](/Users/robotto/Projects/py-web-audio-api/tools/check_idl_surface.py).
+methods, and properties are present on the Python surface.
 
-For more detail, including skipped exclusions, use:
-
-```bash
-.venv/bin/python tools/check_idl_surface.py web-audio-api-idl.txt --verbose
-```
-
-## Release
+## Release Workflow
 
 Update the version in `Cargo.toml`.
-Create and push a tag matching the release version:
+Create and push a tag matching the release version, this uploads the artifacts to PyPi
 
 ```bash
 git tag v0.1.0
 git push origin main
 git push origin v0.1.0
 ```
-
-Pushing the tag triggers the GitHub Actions release workflow, which builds the release artifacts and uploads them to PyPI.

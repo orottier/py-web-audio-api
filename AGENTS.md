@@ -4,7 +4,6 @@
 - This repo is a binding layer, not a place for audio-domain policy or validation that belongs in Rust.
 - Prefer IDL-shaped bindings. When `web-audio-api-rs` exposes a real async API, bind it as asyncio-native instead of forcing a synchronous Python shape.
 - Preserve a simple async architecture: context wrappers are shared through `Arc<...>` and should not grow extra binding-side locking that fights the Rust async methods.
-- Small stubs are still fine for unsupported async/event/media/worklet features, but do not avoid async just because it is async.
 - Preserve the current inheritance model (`BaseAudioContext`, `AudioScheduledSourceNode`, etc.) when adding surface.
 - Keep `src/lib.rs` thin: module declarations, top-level imports, the `#[pymodule]` registration, and tests belong there.
 - Put context-related code and parsing in `src/context.rs`, shared node/context substrate in `src/core.rs`, data objects in `src/data.rs`, and concrete node bindings in `src/nodes.rs`.
@@ -18,7 +17,6 @@
 - Watch for acronym-heavy names when deriving helper names (`IIR`, `HRTF`, etc.). Shared naming helpers should normalize these consistently so the manifest and code do not grow one-off overrides.
 - When testing wrapper types in Rust, exercise the wrapper's binding-shaped API, not the underlying raw Rust API with wrapper signatures mixed in. If the goal is to test raw crate behavior, test the raw crate object directly instead.
 - Keep direct constructors and `createX()` factories aligned where the IDL exposes both.
-- Prefer explicit `NotImplementedError` stubs to misleading partial behavior when a spec feature depends on unmodeled async/event/media/worklet infrastructure.
 - Put user-runnable sample programs in `examples/`, keep them small and dependency-light, and prefer showcasing one feature clearly per script.
 - When adding or changing examples, make sure README points to them and that the examples match the current public Python API instead of test-only helpers.
 - For async Python tests, create awaitables inside a running event loop, typically via `asyncio.run(...)` around a small coroutine helper.
