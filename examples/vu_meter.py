@@ -18,15 +18,18 @@ class VUMeterProcessor(web_audio_api.AudioWorkletProcessor):
             processor_options.get("updateIntervalInMS", 50.0)
         )
         self._next_update_frame = None
+        self._message_handler_bound = False
 
-        def handle_message(value):
-            if isinstance(value, dict) and "updateIntervalInMS" in value:
-                self._update_interval_ms = float(value["updateIntervalInMS"])
-                self._next_update_frame = None
-
-        self.port.onmessage = handle_message
+    def _handle_message(self, value):
+        if isinstance(value, dict) and "updateIntervalInMS" in value:
+            self._update_interval_ms = float(value["updateIntervalInMS"])
+            self._next_update_frame = None
 
     def process(self, inputs, outputs, parameters):
+        if not self._message_handler_bound:
+            self.port.onmessage = self._handle_message
+            self._message_handler_bound = True
+
         interval_in_frames = self._update_interval_ms / 1000.0 * sampleRate
         if self._next_update_frame is None:
             self._next_update_frame = interval_in_frames
