@@ -93,6 +93,38 @@ async def main():
 asyncio.run(main())
 ```
 
+## AudioWorklet
+
+Python worklets are regular `AudioWorkletProcessor` subclasses:
+
+```python
+import web_audio_api
+
+
+class GainHalfProcessor(web_audio_api.AudioWorkletProcessor):
+    name = "gain-half"
+
+    def process(self, inputs, outputs, parameters):
+        if inputs and inputs[0]:
+            for in_channel, out_channel in zip(inputs[0], outputs[0]):
+                for i, sample in enumerate(in_channel):
+                    out_channel[i] = sample * 0.5
+        return True
+```
+
+Register the processor and create a node from it:
+
+```python
+ctx.audioWorklet.addModule(GainHalfProcessor)
+node = web_audio_api.AudioWorkletNode(ctx, "gain-half")
+```
+
+During `process(...)`, the binding also exposes browser-style worklet globals:
+- `sampleRate`
+- `currentTime`
+- `currentFrame`
+- `self.port`
+
 ## Local Development
 
 Create and activate a virtual environment:
