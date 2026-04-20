@@ -12,7 +12,6 @@ class VUMeterProcessor(web_audio_api.AudioWorkletProcessor):
     name = "vu-meter-example"
 
     def __init__(self, options=None):
-        super().__init__(options)
         processor_options = (options or {}).get("processorOptions", {})
         self._volume = 0.0
         self._update_interval_ms = float(
