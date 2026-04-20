@@ -11,6 +11,8 @@ Install from PyPI:
 pip install web-audio-api
 ```
 
+This package currently requires **Python 3.11 or newer**.
+
 Create a simple audio context and start an oscillator:
 
 ```python
