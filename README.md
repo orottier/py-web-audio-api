@@ -46,8 +46,8 @@ Run an example after `maturin develop` (see Local Development section)
 ## Async Methods
 
 The binding exposes asyncio-native awaitables for the Web Audio methods that are async in
-`web-audio-api-rs`. Such as `AudioContext.resume()` and
-`OfflineAudioContext::startRendering()`.
+`web-audio-api-rs`, such as `AudioContext.resume()` and
+`OfflineAudioContext.startRendering()`.
 
 ```python
 import asyncio
