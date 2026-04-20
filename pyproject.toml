@@ -16,5 +16,5 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/orottier/web-audio-api-rs"
-Issues = "https://github.com/orottier/web-audio-api-rs/issues"
+Repository = "https://github.com/robotto/py-web-audio-api"
+Issues = "https://github.com/robotto/py-web-audio-api/issues"
