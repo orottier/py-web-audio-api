@@ -1,6 +1,6 @@
 use super::*;
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyStopIteration, PyTypeError, PyValueError};
-use pyo3::types::{PyIterator, PyList, PyModule, PyTuple, PyType};
+use pyo3::types::{PyDict, PyIterator, PyList, PyModule, PyTuple, PyType};
 use pyo3::IntoPyObjectExt;
 use std::any::Any;
 use std::cell::RefCell;
@@ -558,6 +558,7 @@ enum WorkletCommand {
         inputs: Vec<Vec<Vec<f32>>>,
         outputs: Vec<Vec<Vec<f32>>>,
         parameters: Vec<(String, Vec<f32>)>,
+        scope: PythonWorkletScopeValues,
         reply: SyncSender<Result<(Vec<Vec<Vec<f32>>>, bool), String>>,
     },
     DeliverToProcessor {
@@ -570,6 +571,13 @@ enum WorkletCommand {
     DropProcessor {
         bridge_id: u64,
     },
+}
+
+#[derive(Clone, Copy)]
+struct PythonWorkletScopeValues {
+    sample_rate: f32,
+    current_time: f64,
+    current_frame: u64,
 }
 
 struct RegisteredPythonWorklet {
@@ -905,7 +913,67 @@ fn dispatch_message_to_port_registry(
 
 struct PythonWorkletInstance {
     processor: Py<PyAny>,
+    processor_globals: Py<PyDict>,
     processor_port: Arc<MessagePortShared>,
+}
+
+fn processor_globals_for_instance<'py>(
+    py: Python<'py>,
+    instance: &Bound<'py, PyAny>,
+) -> PyResult<Py<PyDict>> {
+    let globals = instance
+        .getattr("process")?
+        .getattr("__func__")?
+        .getattr("__globals__")?
+        .cast_into::<PyDict>()?;
+    let _ = py;
+    Ok(globals.unbind())
+}
+
+fn with_patched_processor_globals<T>(
+    py: Python<'_>,
+    globals: &Bound<'_, PyDict>,
+    scope: PythonWorkletScopeValues,
+    f: impl FnOnce() -> PyResult<T>,
+) -> PyResult<T> {
+    let names = [
+        (
+            "sampleRate",
+            scope.sample_rate.into_pyobject(py)?.unbind().into_any(),
+        ),
+        (
+            "currentTime",
+            scope.current_time.into_pyobject(py)?.unbind().into_any(),
+        ),
+        (
+            "currentFrame",
+            scope.current_frame.into_pyobject(py)?.unbind().into_any(),
+        ),
+    ];
+
+    let mut previous = Vec::with_capacity(names.len());
+    for (name, value) in &names {
+        let old_value = if let Some(existing) = globals.get_item(name)? {
+            Some(existing.unbind())
+        } else {
+            None
+        };
+        globals.set_item(name, value.bind(py))?;
+        previous.push((*name, old_value));
+    }
+
+    let result = f();
+
+    for (name, old_value) in previous.into_iter().rev() {
+        match old_value {
+            Some(value) => globals.set_item(name, value.bind(py))?,
+            None => {
+                globals.del_item(name)?;
+            }
+        }
+    }
+
+    result
 }
 
 fn worklet_runtime_loop(receiver: Receiver<WorkletCommand>, global_port: Arc<MessagePortShared>) {
@@ -929,6 +997,7 @@ fn worklet_runtime_loop(receiver: Receiver<WorkletCommand>, global_port: Arc<Mes
                     })?;
                     let options_py = basic_message_value_to_py(py, &options)?;
                     let instance = registration.class.bind(py).call1((options_py,))?;
+                    let processor_globals = processor_globals_for_instance(py, &instance)?;
                     let port = MessagePort::new_py(py, Arc::clone(&processor_port))?;
                     let mut base = instance.extract::<PyRefMut<'_, AudioWorkletProcessor>>()?;
                     base.port = Some(port);
@@ -937,6 +1006,7 @@ fn worklet_runtime_loop(receiver: Receiver<WorkletCommand>, global_port: Arc<Mes
                         bridge_id,
                         PythonWorkletInstance {
                             processor: instance.unbind(),
+                            processor_globals,
                             processor_port,
                         },
                     );
@@ -950,6 +1020,7 @@ fn worklet_runtime_loop(receiver: Receiver<WorkletCommand>, global_port: Arc<Mes
                 inputs,
                 outputs,
                 parameters,
+                scope,
                 reply,
             } => {
                 let result = Python::attach(|py| -> PyResult<(Vec<Vec<Vec<f32>>>, bool)> {
@@ -978,11 +1049,21 @@ fn worklet_runtime_loop(receiver: Receiver<WorkletCommand>, global_port: Arc<Mes
                         params_py.set_item(name, values)?;
                     }
 
-                    let keepalive = instance
-                        .processor
-                        .bind(py)
-                        .call_method1("process", (inputs_py, outputs_py.clone(), params_py))?
-                        .extract::<bool>()?;
+                    let keepalive = with_patched_processor_globals(
+                        py,
+                        &instance.processor_globals.bind(py),
+                        scope,
+                        || {
+                            instance
+                                .processor
+                                .bind(py)
+                                .call_method1(
+                                    "process",
+                                    (inputs_py, outputs_py.clone(), params_py),
+                                )?
+                                .extract::<bool>()
+                        },
+                    )?;
 
                     let mut copied_outputs = Vec::new();
                     for output in outputs_py.iter() {
@@ -1051,6 +1132,7 @@ fn bridge_process_quantum(
     inputs: Vec<Vec<Vec<f32>>>,
     outputs: Vec<Vec<Vec<f32>>>,
     parameters: Vec<(String, Vec<f32>)>,
+    scope: PythonWorkletScopeValues,
 ) -> Result<(Vec<Vec<Vec<f32>>>, bool), String> {
     let (send, recv) = mpsc::sync_channel(1);
     worklet_host()
@@ -1060,6 +1142,7 @@ fn bridge_process_quantum(
             inputs,
             outputs,
             parameters,
+            scope,
             reply: send,
         })
         .map_err(|err| err.to_string())?;
@@ -1168,7 +1251,7 @@ impl web_audio_api_rs::worklet::AudioWorkletProcessor for PythonWorkletBridgePro
         inputs: &'b [&'a [&'a [f32]]],
         outputs: &'b mut [&'a mut [&'a mut [f32]]],
         params: web_audio_api_rs::worklet::AudioParamValues<'b>,
-        _scope: &'b web_audio_api_rs::worklet::AudioWorkletGlobalScope,
+        scope: &'b web_audio_api_rs::worklet::AudioWorkletGlobalScope,
     ) -> bool {
         if self.dead {
             for output in outputs.iter_mut() {
@@ -1201,10 +1284,20 @@ impl web_audio_api_rs::worklet::AudioWorkletProcessor for PythonWorkletBridgePro
             .keys()
             .map(|key| (key.to_owned(), params.get(key).to_vec()))
             .collect::<Vec<_>>();
+        let scope_values = PythonWorkletScopeValues {
+            sample_rate: scope.sample_rate,
+            current_time: scope.current_time,
+            current_frame: scope.current_frame,
+        };
 
-        let (rendered_outputs, keepalive) =
-            bridge_process_quantum(self.bridge_id, inputs_vec, outputs_template, parameters)
-                .unwrap_or_else(|err| panic!("{err}"));
+        let (rendered_outputs, keepalive) = bridge_process_quantum(
+            self.bridge_id,
+            inputs_vec,
+            outputs_template,
+            parameters,
+            scope_values,
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
 
         for (output, rendered) in outputs.iter_mut().zip(rendered_outputs.iter()) {
             for (channel, rendered_channel) in output.iter_mut().zip(rendered.iter()) {

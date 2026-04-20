@@ -551,6 +551,63 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(shared["constructed"], 1)
         self.assertGreaterEqual(shared["processed"], 1)
 
+    def test_audio_worklet_process_exposes_scope_globals_and_restores_module_state(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 256, 8_000.0)
+        processor_name = self.unique_worklet_name("scope")
+        observed = []
+        sentinel_sample_rate = object()
+        sentinel_current_time = object()
+        sentinel_current_frame = object()
+        missing = object()
+        old_sample_rate = globals().get("sampleRate", missing)
+        old_current_time = globals().get("currentTime", missing)
+        old_current_frame = globals().get("currentFrame", missing)
+
+        def restore(name, old_value):
+            if old_value is missing:
+                globals().pop(name, None)
+            else:
+                globals()[name] = old_value
+
+        globals()["sampleRate"] = sentinel_sample_rate
+        globals()["currentTime"] = sentinel_current_time
+        globals()["currentFrame"] = sentinel_current_frame
+        self.addCleanup(lambda: restore("sampleRate", old_sample_rate))
+        self.addCleanup(lambda: restore("currentTime", old_current_time))
+        self.addCleanup(lambda: restore("currentFrame", old_current_frame))
+
+        class ScopeProcessor(web_audio_api.AudioWorkletProcessor):
+            name = processor_name
+
+            def process(self, inputs, outputs, parameters):
+                observed.append((sampleRate, currentTime, currentFrame))
+                for channel in outputs[0]:
+                    for i in range(len(channel)):
+                        channel[i] = 0.0
+                return True
+
+        ctx.audioWorklet.addModule(ScopeProcessor)
+        node = web_audio_api.AudioWorkletNode(
+            ctx,
+            processor_name,
+            {"numberOfInputs": 0, "numberOfOutputs": 1, "outputChannelCount": [1]},
+        )
+        node.connect(ctx.destination)
+
+        self.run_async(lambda: ctx.startRendering())
+
+        self.assertGreaterEqual(len(observed), 2)
+        self.assertEqual(observed[0][0], 8_000.0)
+        self.assertAlmostEqual(observed[0][1], 0.0, places=9)
+        self.assertEqual(observed[0][2], 0)
+        self.assertEqual(observed[1][0], 8_000.0)
+        self.assertAlmostEqual(observed[1][1], 128 / 8_000.0, places=9)
+        self.assertEqual(observed[1][2], 128)
+
+        self.assertIs(globals()["sampleRate"], sentinel_sample_rate)
+        self.assertIs(globals()["currentTime"], sentinel_current_time)
+        self.assertIs(globals()["currentFrame"], sentinel_current_frame)
+
     def test_audio_worklet_message_ports_round_trip(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
         processor_name = self.unique_worklet_name("messages")
