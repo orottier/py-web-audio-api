@@ -151,10 +151,10 @@ methods, and properties are present on the Python surface.
 ## Release Workflow
 
 Update the version in `Cargo.toml`.
-Create and push a tag matching the release version, this uploads the artifacts to PyPi
+Create and push a tag matching the release version; this uploads the artifacts to PyPI.
 
 ```bash
-git tag v0.1.0
+git tag v0.3.1
 git push origin main
-git push origin v0.1.0
+git push origin v0.3.1
 ```
