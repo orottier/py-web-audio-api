@@ -30,6 +30,7 @@ osc.start()
 Runnable example scripts live in [examples](/Users/robotto/Projects/py-web-audio-api/examples):
 
 - [examples/osc_gain.py](/Users/robotto/Projects/py-web-audio-api/examples/osc_gain.py): simple oscillator through a gain node
+- [examples/notebook_quickstart.ipynb](/Users/robotto/Projects/py-web-audio-api/examples/notebook_quickstart.ipynb): Jupyter notebook quickstart to play with online or offline audio
 - [examples/worklet_white_noise.py](/Users/robotto/Projects/py-web-audio-api/examples/worklet_white_noise.py): `AudioWorklet` white noise with message-based volume changes
 - [examples/analyser_meter.py](/Users/robotto/Projects/py-web-audio-api/examples/analyser_meter.py): analyser-based terminal level meter
 - [examples/buffer_source.py](/Users/robotto/Projects/py-web-audio-api/examples/buffer_source.py): build and play a short buffer
