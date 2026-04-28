@@ -31,6 +31,7 @@ Runnable example scripts live in [examples](./examples):
 
 - [examples/osc_gain.py](./examples/osc_gain.py): simple oscillator through a gain node
 - [examples/worklet_white_noise.py](./examples/worklet_white_noise.py): `AudioWorklet` white noise with message-based volume changes
+- [examples/notebook_quickstart.ipynb](./examples/notebook_quickstart.ipynb): Jupyter notebook quickstart to play with online or offline audio
 - [examples/analyser_meter.py](./examples/analyser_meter.py): analyser-based terminal level meter
 - [examples/buffer_source.py](./examples/buffer_source.py): build and play a short buffer
 - [examples/media_element.py](./examples/media_element.py): play an audio file through `MediaElementAudioSourceNode`
