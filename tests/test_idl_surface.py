@@ -82,7 +82,6 @@ class IdlSurfaceScriptTest(unittest.TestCase):
         output = check_idl_surface.format_result(result, verbose=True)
 
         self.assertIn("Skipped interfaces:", output)
-        self.assertIn("AudioPlaybackStats", output)
         self.assertIn("BaseAudioContext.renderQuantumSize", output)
         self.assertIn("AudioContext.setSinkId", output)
 

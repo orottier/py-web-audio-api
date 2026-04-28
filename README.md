@@ -25,6 +25,9 @@ osc.connect(ctx.destination)
 osc.start()
 ```
 
+For realtime output diagnostics, `AudioContext.playbackStats` exposes underrun and
+latency metrics as a live Web Audio-style surface.
+
 ## Examples
 
 Runnable example scripts live in [examples](./examples):
@@ -59,7 +62,7 @@ import web_audio_api
 
 
 async def main():
-    ctx = web_audio_api.OfflineAudioContext(1, 2_000, 2_000.0)
+    ctx = web_audio_api.OfflineAudioContext(1, 3_000, 3_000.0)
     src = ctx.createConstantSource()
     src.offset.value = 0.25
     src.connect(ctx.destination)

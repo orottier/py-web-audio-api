@@ -415,6 +415,44 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         render_capacity.stop()
         self.run_async(lambda: ctx.close())
 
+    def test_audio_playback_stats_surface_is_wired(self):
+        ctx = web_audio_api.AudioContext({"sinkId": "none"})
+        playback_stats = ctx.playbackStats
+
+        self.assertIs(playback_stats, ctx.playbackStats)
+        self.assertIsInstance(playback_stats, web_audio_api.AudioPlaybackStats)
+
+        self.run_async(lambda: ctx.resume())
+        time.sleep(0.05)
+
+        self.assertGreaterEqual(playback_stats.underrunDuration, 0.0)
+        self.assertGreaterEqual(playback_stats.underrunEvents, 0)
+        self.assertGreaterEqual(playback_stats.totalDuration, 0.0)
+        self.assertGreaterEqual(playback_stats.averageLatency, 0.0)
+        self.assertGreaterEqual(playback_stats.minimumLatency, 0.0)
+        self.assertGreaterEqual(playback_stats.maximumLatency, 0.0)
+
+        snapshot = playback_stats.toJSON()
+        self.assertEqual(
+            sorted(snapshot),
+            [
+                "averageLatency",
+                "maximumLatency",
+                "minimumLatency",
+                "totalDuration",
+                "underrunDuration",
+                "underrunEvents",
+            ],
+        )
+
+        playback_stats.resetLatency()
+        reset_snapshot = playback_stats.toJSON()
+        self.assertEqual(reset_snapshot["averageLatency"], 0.0)
+        self.assertEqual(reset_snapshot["minimumLatency"], 0.0)
+        self.assertEqual(reset_snapshot["maximumLatency"], 0.0)
+
+        self.run_async(lambda: ctx.close())
+
     def test_create_script_processor_exists_on_contexts(self):
         realtime = web_audio_api.AudioContext({"sinkId": "none"})
         offline = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
@@ -1127,11 +1165,12 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             if devices:
                 self.assertIsInstance(devices[0], web_audio_api.MediaDeviceInfo)
 
-    def test_create_script_processor_passes_zero_buffer_size_through(self):
+    def test_create_script_processor_defaults_zero_buffer_size_to_256(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        node = ctx.createScriptProcessor()
 
-        with self.assertRaises(RuntimeError):
-            ctx.createScriptProcessor()
+        self.assertIsInstance(node, web_audio_api.ScriptProcessorNode)
+        self.assertEqual(node.bufferSize, 256)
 
     def test_offline_oscillator_graph_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
@@ -1170,6 +1209,10 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(configured_osc.type, "square")
         self.assertEqual(configured_osc.frequency.value, 220.0)
         self.assertEqual(configured_osc.detune.value, 50.0)
+
+    def test_offline_audio_context_rejects_sample_rate_below_3000(self):
+        with self.assertRaises(BaseException):
+            web_audio_api.OfflineAudioContext(1, 128, 2_999.0)
 
     def test_audio_node_options_are_accepted_in_inherited_option_dicts(self):
         ctx = web_audio_api.OfflineAudioContext(2, 128, 44_100.0)
@@ -1457,7 +1500,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertIsNone(osc.onended)
 
     def test_audio_scheduled_source_node_onended_callback_fires(self):
-        ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)
+        ctx = web_audio_api.OfflineAudioContext(1, 3000, 3000.0)
         src = web_audio_api.ConstantSourceNode(ctx)
         calls = []
 
@@ -1476,6 +1519,34 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(calls[0].type, "ended")
         self.assertIs(calls[0].target, src)
         self.assertIs(calls[0].currentTarget, src)
+
+    def test_audio_scheduled_source_node_stop_may_be_called_twice(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
+        osc = web_audio_api.OscillatorNode(ctx)
+
+        osc.start()
+        osc.stop(0.1)
+        osc.stop(0.2)
+
+    def test_audio_scheduled_source_node_stop_before_future_start_still_fires_onended(self):
+        ctx = web_audio_api.OfflineAudioContext(1, 3000, 3000.0)
+        osc = web_audio_api.OscillatorNode(ctx)
+        calls = []
+
+        def onended(event):
+            calls.append(event)
+
+        osc.onended = onended
+        osc.connect(ctx.destination)
+        osc.start(0.8)
+        osc.stop(0.2)
+
+        self.run_async(lambda: ctx.startRendering())
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].type, "ended")
+        self.assertIs(calls[0].target, osc)
+        self.assertIs(calls[0].currentTarget, osc)
 
     def test_event_target_manual_dispatch_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
@@ -1567,7 +1638,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertTrue(all(sample == 0.5 for sample in data[2 * buffer_size :]))
 
     def test_constant_source_renders_scheduled_samples_offline(self):
-        ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)
+        ctx = web_audio_api.OfflineAudioContext(1, 3000, 3000.0)
         src = web_audio_api.ConstantSourceNode(ctx, {"offset": 0.25})
 
         src.connect(ctx.destination)
@@ -1578,13 +1649,13 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         data = rendered.getChannelData(0)
 
         self.assertEqual(rendered.numberOfChannels, 1)
-        self.assertEqual(rendered.length, 2000)
-        self.assertEqual(rendered.sampleRate, 2000.0)
+        self.assertEqual(rendered.length, 3000)
+        self.assertEqual(rendered.sampleRate, 3000.0)
         self.assertEqual(rendered.duration, 1.0)
-        self.assertEqual(len(data), 2000)
-        self.assertTrue(all(sample == 0.0 for sample in data[:500]))
-        self.assertTrue(all(sample == 0.25 for sample in data[500:1501]))
-        self.assertTrue(all(sample == 0.0 for sample in data[1501:]))
+        self.assertEqual(len(data), 3000)
+        self.assertTrue(all(sample == 0.0 for sample in data[:751]))
+        self.assertTrue(all(sample == 0.25 for sample in data[751:2251]))
+        self.assertTrue(all(sample == 0.0 for sample in data[2251:]))
 
     def test_audio_buffer_source_node_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
@@ -1618,11 +1689,11 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertIsNone(src.buffer)
 
     def test_audio_buffer_source_renders_samples_offline(self):
-        ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)
+        ctx = web_audio_api.OfflineAudioContext(1, 3000, 3000.0)
         buffer = web_audio_api.AudioBuffer(
-            {"numberOfChannels": 1, "length": 2000, "sampleRate": 2000.0}
+            {"numberOfChannels": 1, "length": 3000, "sampleRate": 3000.0}
         )
-        buffer.copyToChannel([0.125] * 1000 + [0.25] * 1000, 0)
+        buffer.copyToChannel([0.125] * 1500 + [0.25] * 1500, 0)
         src = web_audio_api.AudioBufferSourceNode(ctx)
 
         src.buffer = buffer
@@ -1630,8 +1701,8 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         src.start()
 
         data = self.run_async(lambda: ctx.startRendering()).getChannelData(0)
-        self.assertTrue(all(sample == 0.125 for sample in data[:1000]))
-        self.assertTrue(all(sample == 0.25 for sample in data[1000:]))
+        self.assertTrue(all(sample == 0.125 for sample in data[:1500]))
+        self.assertTrue(all(sample == 0.25 for sample in data[1500:]))
 
     def test_gain_node_works(self):
         ctx = web_audio_api.OfflineAudioContext(1, 128, 44_100.0)
@@ -1650,11 +1721,11 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.assertEqual(gain.gain.value, 1.0)
 
     def test_gain_node_renders_samples_offline(self):
-        ctx = web_audio_api.OfflineAudioContext(1, 2000, 2000.0)
+        ctx = web_audio_api.OfflineAudioContext(1, 3000, 3000.0)
         buffer = web_audio_api.AudioBuffer(
-            {"numberOfChannels": 1, "length": 2000, "sampleRate": 2000.0}
+            {"numberOfChannels": 1, "length": 3000, "sampleRate": 3000.0}
         )
-        buffer.copyToChannel([0.5] * 2000, 0)
+        buffer.copyToChannel([0.5] * 3000, 0)
         src = web_audio_api.AudioBufferSourceNode(ctx, {"buffer": buffer})
         gain = web_audio_api.GainNode(ctx, {"gain": 0.25})
 
