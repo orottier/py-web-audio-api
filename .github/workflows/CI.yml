@@ -20,12 +20,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.86.0
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install Linux audio build dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - name: Check formatting
+        run: cargo fmt --check
       - name: Run Rust tests
         run: cargo test
       - name: Run Clippy
