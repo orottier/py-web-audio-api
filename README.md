@@ -196,7 +196,7 @@ Update the version in `Cargo.toml`.
 Create and push a tag matching the release version; this uploads the artifacts to PyPI.
 
 ```bash
-git tag v0.3.1
+git tag v0.5.0
 git push origin main
-git push origin v0.3.1
+git push origin v0.5.0
 ```
