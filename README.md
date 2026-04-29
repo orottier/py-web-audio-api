@@ -42,6 +42,7 @@ Runnable example scripts live in [examples](./examples):
 - [examples/recorder.py](./examples/recorder.py): record graph output to a WAV file
 - [examples/stream_in.py](./examples/stream_in.py): stream Python-generated chunks into a `MediaStreamAudioSourceNode`
 - [examples/stream_out.py](./examples/stream_out.py): read graph output back into Python from a `MediaStreamAudioDestinationNode`
+- [examples/playback_stats.py](./examples/playback_stats.py): `AudioContext.playbackStats` and `renderCapacity` demo that intentionally stalls a worklet processor
 - [examples/vu_meter.py](./examples/vu_meter.py): CLI worklet-based VU meter driven by processor port messages
 
 Run an example after `maturin develop` (see Local Development section)
