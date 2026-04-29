@@ -467,7 +467,7 @@ class WebAudioApiSmokeTest(unittest.TestCase):
         self.run_async(lambda: realtime.close())
 
     def test_audio_worklet_registration_validates_shape(self):
-        ctx = web_audio_api.OfflineAudioContext(1, 128, 8_000.0)
+        ctx = web_audio_api.OfflineAudioContext(1, 384, 8_000.0)
 
         class MissingName(web_audio_api.AudioWorkletProcessor):
             def process(self, inputs, outputs, parameters):
@@ -668,17 +668,23 @@ class WebAudioApiSmokeTest(unittest.TestCase):
 
             def __init__(self, options=None):
                 self.multiplier = 1.0
+                self._message_handler_bound = False
 
-            def onmessage(self, value):
+            def _handle_message(self, event):
+                value = event.data
                 self.multiplier = float(value["multiplier"])
-                port.postMessage({"echo": self.multiplier})
+                self.port.postMessage({"echo": self.multiplier})
 
             def process(self, inputs, outputs, parameters):
+                if not self._message_handler_bound:
+                    self.port.onmessage = self._handle_message
+                    self._message_handler_bound = True
+                    port.postMessage({"ready": self.multiplier})
                 for channel in outputs[0]:
                     for i in range(len(channel)):
                         channel[i] = self.multiplier
                 port.postMessage({"seen": self.multiplier})
-                return False
+                return True
 
         ctx.audioWorklet.addModule(MessageProcessor)
         node = web_audio_api.AudioWorkletNode(
@@ -686,17 +692,23 @@ class WebAudioApiSmokeTest(unittest.TestCase):
             processor_name,
             {"numberOfInputs": 0, "numberOfOutputs": 1, "outputChannelCount": [1]},
         )
-        node.port.onmessage = lambda event: received.append(event.data)
-        node.port.postMessage({"multiplier": 0.75})
+        node.port.onmessage = lambda event: (
+            received.append(event.data),
+            node.port.postMessage({"multiplier": 0.75})
+            if event.data.get("ready") == 1.0
+            else None,
+        )
         node.connect(ctx.destination)
 
         rendered = self.run_async(lambda: ctx.startRendering())
         samples = rendered.getChannelData(0)
 
-        self.assertTrue(all(abs(sample - 0.75) < 1e-6 for sample in samples[:128]))
-        self.assertGreaterEqual(len(received), 2)
-        self.assertEqual(received[0]["echo"], 0.75)
-        self.assertEqual(received[1]["seen"], 0.75)
+        self.assertTrue(all(abs(sample - 1.0) < 1e-6 for sample in samples[:128]))
+        self.assertTrue(all(abs(sample - 0.75) < 1e-6 for sample in samples[128:]))
+        self.assertGreaterEqual(len(received), 3)
+        self.assertEqual(received[0]["ready"], 1.0)
+        self.assertEqual(received[1]["seen"], 1.0)
+        self.assertEqual(received[2]["echo"], 0.75)
         self.assertIs(globals()["port"], sentinel_port)
 
     def test_audio_worklet_invalid_message_payload_raises(self):

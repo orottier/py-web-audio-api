@@ -9,12 +9,17 @@ class WhiteNoiseProcessor(web_audio_api.AudioWorkletProcessor):
 
     def __init__(self, options=None):
         self.volume = 0.03
+        self._message_handler_bound = False
 
-    def onmessage(self, value):
+    def _handle_message(self, event):
+        value = event.data
         if isinstance(value, dict) and "volume" in value:
             self.volume = float(value["volume"])
 
     def process(self, inputs, outputs, parameters):
+        if not self._message_handler_bound:
+            self.port.onmessage = self._handle_message
+            self._message_handler_bound = True
         for output in outputs:
             for channel in output:
                 for i in range(len(channel)):
