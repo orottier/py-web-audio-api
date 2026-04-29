@@ -16,7 +16,7 @@ impl PeriodicWave {
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
             return Ok(Self(web_audio_api_rs::PeriodicWave::new(
-                ctx.0.as_ref(),
+                ctx.inner.as_ref(),
                 options,
             )));
         }
@@ -1801,7 +1801,7 @@ impl AudioBufferSourceNode {
         let options = audio_buffer_source_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(audio_buffer_source_node(ctx.0.as_ref(), options));
+            return Ok(audio_buffer_source_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -1906,7 +1906,7 @@ impl MediaElementAudioSourceNode {
             required_option_item(options, "MediaElementAudioSourceOptions", "mediaElement")?
                 .extract::<PyRef<'_, MediaElement>>()?;
 
-        media_element_audio_source_node(ctx.0.as_ref(), &media_element)
+        media_element_audio_source_node(ctx.inner.as_ref(), &media_element)
     }
 
     #[getter(mediaElement)]
@@ -1927,7 +1927,7 @@ impl MediaStreamAudioSourceNode {
                 .extract::<PyRef<'_, MediaStream>>()?;
 
         Ok(media_stream_audio_source_node(
-            ctx.0.as_ref(),
+            ctx.inner.as_ref(),
             &media_stream.0,
         ))
     }
@@ -1953,7 +1953,7 @@ impl MediaStreamTrackAudioSourceNode {
         .extract::<PyRef<'_, MediaStreamTrack>>()?;
 
         Ok(media_stream_track_audio_source_node(
-            ctx.0.as_ref(),
+            ctx.inner.as_ref(),
             &media_stream_track.0,
         ))
     }
@@ -2110,7 +2110,7 @@ impl AudioWorkletNode {
     ) -> PyResult<Py<Self>> {
         let (descriptors, options) = audio_worklet_node_options(name, options)?;
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return audio_worklet_node_py(py, ctx.0.as_ref(), descriptors, options);
+            return audio_worklet_node_py(py, ctx.inner.as_ref(), descriptors, options);
         }
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
             return audio_worklet_node_py(py, ctx.0.as_ref(), descriptors, options);
@@ -2178,7 +2178,7 @@ impl AnalyserNode {
         let options = analyser_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(analyser_node(ctx.0.as_ref(), options));
+            return Ok(analyser_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2277,7 +2277,7 @@ impl ConvolverNode {
         let options = convolver_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(convolver_node(ctx.0.as_ref(), options));
+            return Ok(convolver_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2335,7 +2335,7 @@ impl DynamicsCompressorNode {
         let options = dynamics_compressor_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(dynamics_compressor_node(ctx.0.as_ref(), options));
+            return Ok(dynamics_compressor_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2392,7 +2392,7 @@ impl GainNode {
         let options = gain_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(gain_node(ctx.0.as_ref(), options));
+            return Ok(gain_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2424,7 +2424,7 @@ impl DelayNode {
         let options = delay_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(delay_node(ctx.0.as_ref(), options));
+            return Ok(delay_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2456,7 +2456,7 @@ impl StereoPannerNode {
         let options = stereo_panner_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(stereo_panner_node(ctx.0.as_ref(), options));
+            return Ok(stereo_panner_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2491,7 +2491,7 @@ impl ChannelMergerNode {
         let options = channel_merger_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(channel_merger_node(ctx.0.as_ref(), options));
+            return Ok(channel_merger_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2521,7 +2521,7 @@ impl ChannelSplitterNode {
         let options = channel_splitter_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(channel_splitter_node(ctx.0.as_ref(), options));
+            return Ok(channel_splitter_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2548,7 +2548,7 @@ impl BiquadFilterNode {
         let options = biquad_filter_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(biquad_filter_node(ctx.0.as_ref(), options));
+            return Ok(biquad_filter_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2622,7 +2622,7 @@ impl IIRFilterNode {
         let options = iir_filter_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(iir_filter_node(ctx.0.as_ref(), options));
+            return Ok(iir_filter_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2666,7 +2666,7 @@ impl WaveShaperNode {
         let options = wave_shaper_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(wave_shaper_node(ctx.0.as_ref(), options));
+            return Ok(wave_shaper_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2720,7 +2720,7 @@ impl PannerNode {
         let options = panner_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(panner_node(ctx.0.as_ref(), options));
+            return Ok(panner_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2869,7 +2869,7 @@ impl OscillatorNode {
         let options = oscillator_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(oscillator_node(ctx.0.as_ref(), options));
+            return Ok(oscillator_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {
@@ -2927,7 +2927,7 @@ impl ConstantSourceNode {
         let options = constant_source_options(options)?;
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, AudioContext>>() {
-            return Ok(constant_source_node(ctx.0.as_ref(), options));
+            return Ok(constant_source_node(ctx.inner.as_ref(), options));
         }
 
         if let Ok(ctx) = ctx.extract::<PyRef<'_, OfflineAudioContext>>() {

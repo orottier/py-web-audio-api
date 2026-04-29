@@ -1098,22 +1098,6 @@ fn worklet_runtime_loop(receiver: Receiver<WorkletCommand>, global_port: Arc<Mes
                     let Some(instance) = processors.get(&bridge_id) else {
                         return Ok(());
                     };
-                    let value_py = basic_message_value_to_py(py, &value)?;
-                    if instance.processor.bind(py).hasattr("onmessage")? {
-                        with_patched_processor_globals(
-                            py,
-                            &instance.processor_globals.bind(py),
-                            None,
-                            &[("port", instance.processor_python_port.clone_ref(py))],
-                            || {
-                                instance
-                                    .processor
-                                    .bind(py)
-                                    .call_method1("onmessage", (value_py.clone_ref(py),))?;
-                                Ok(())
-                            },
-                        )?;
-                    }
                     dispatch_message_to_port_registry(py, &instance.processor_port, value)?;
                     Ok(())
                 });

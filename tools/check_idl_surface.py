@@ -23,7 +23,6 @@ METHOD_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 LEADING_EXT_ATTR_RE = re.compile(r"^\[[^\]]*\]\s*")
 
 EXCLUDED_INTERFACES = {
-    "AudioPlaybackStats": "Not modeled in the Python binding.",
     "AudioSinkInfo": "Not modeled in the Python binding.",
     "AudioWorkletGlobalScope": "Python worklets do not expose a separate global-scope object.",
 }
@@ -37,7 +36,6 @@ EXCLUDED_MEMBERS = {
     "AudioContext": {
         "attributes": {
             "onerror": "Not modeled in the current binding.",
-            "playbackStats": "Not modeled in the current binding.",
         },
         "methods": {
             "getOutputTimestamp": "Not modeled in the current binding.",

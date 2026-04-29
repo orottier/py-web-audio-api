@@ -77,6 +77,11 @@ pub(crate) struct AudioRenderCapacity {
     inner: Arc<web_audio_api_rs::AudioRenderCapacity>,
 }
 
+#[pyclass]
+pub(crate) struct AudioPlaybackStats {
+    inner: Arc<web_audio_api_rs::AudioPlaybackStats>,
+}
+
 fn audio_render_capacity_event_py(
     py: Python<'_>,
     registry: &Arc<Mutex<EventTargetRegistry>>,
@@ -303,8 +308,9 @@ fn offline_audio_completion_event_py(
 
 pub(crate) fn new_realtime_context(
     options: web_audio_api_rs::context::AudioContextOptions,
-) -> web_audio_api_rs::context::AudioContext {
-    web_audio_api_rs::context::AudioContext::new(options)
+) -> PyResult<web_audio_api_rs::context::AudioContext> {
+    web_audio_api_rs::context::AudioContext::try_new(options)
+        .map_err(|err| async_runtime_error(err.to_string()))
 }
 
 pub(crate) fn audio_context_latency_category_from_value(
@@ -429,11 +435,11 @@ fn offline_audio_context_options_from_dict(
 
 impl AudioContext {
     pub(crate) fn clear_onsinkchange(&self) {
-        self.0.clear_onsinkchange();
+        self.inner.clear_onsinkchange();
     }
 
     pub(crate) fn set_onsinkchange_registry(&self, registry: Arc<Mutex<EventTargetRegistry>>) {
-        self.0.set_onsinkchange(move |_| {
+        self.inner.set_onsinkchange(move |_| {
             Python::attach(|py| {
                 if let Err(err) =
                     EventTarget::dispatch_from_registry(py, &registry, "sinkchange", None, None)
@@ -937,10 +943,11 @@ impl BaseAudioContext {
 }
 
 #[pyclass(extends = BaseAudioContext)]
-pub(crate) struct AudioContext(
-    pub(crate) Arc<web_audio_api_rs::context::AudioContext>,
-    pub(crate) Arc<Mutex<EventTargetRegistry>>,
-);
+pub(crate) struct AudioContext {
+    pub(crate) inner: Arc<web_audio_api_rs::context::AudioContext>,
+    pub(crate) render_capacity_registry: Arc<Mutex<EventTargetRegistry>>,
+    pub(crate) playback_stats: Mutex<Option<Py<AudioPlaybackStats>>>,
+}
 
 #[pymethods]
 impl AudioContext {
@@ -948,12 +955,29 @@ impl AudioContext {
     pub(crate) fn render_capacity(&self, py: Python<'_>) -> PyResult<Py<AudioRenderCapacity>> {
         Py::new(
             py,
-            PyClassInitializer::from(EventTarget::from_registry(Arc::clone(&self.1))).add_subclass(
-                AudioRenderCapacity {
-                    inner: Arc::new(self.0.render_capacity()),
-                },
-            ),
+            PyClassInitializer::from(EventTarget::from_registry(Arc::clone(
+                &self.render_capacity_registry,
+            )))
+            .add_subclass(AudioRenderCapacity {
+                inner: Arc::new(self.inner.render_capacity()),
+            }),
         )
+    }
+
+    #[getter(playbackStats)]
+    pub(crate) fn playback_stats(&self, py: Python<'_>) -> PyResult<Py<AudioPlaybackStats>> {
+        if let Some(existing) = self.playback_stats.lock().unwrap().as_ref() {
+            return Ok(existing.clone_ref(py));
+        }
+
+        let stats = Py::new(
+            py,
+            AudioPlaybackStats {
+                inner: Arc::new(self.inner.playback_stats()),
+            },
+        )?;
+        *self.playback_stats.lock().unwrap() = Some(stats.clone_ref(py));
+        Ok(stats)
     }
 
     #[getter]
@@ -963,17 +987,17 @@ impl AudioContext {
 
     #[getter(baseLatency)]
     pub(crate) fn base_latency(&self) -> f64 {
-        self.0.base_latency()
+        self.inner.base_latency()
     }
 
     #[getter(outputLatency)]
     pub(crate) fn output_latency(&self) -> f64 {
-        self.0.output_latency()
+        self.inner.output_latency()
     }
 
     #[getter(sinkId)]
     pub(crate) fn sink_id(&self) -> String {
-        self.0.sink_id()
+        self.inner.sink_id()
     }
 
     #[setter]
@@ -989,7 +1013,7 @@ impl AudioContext {
     }
 
     pub(crate) fn resume<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let ctx = Arc::clone(&self.0);
+        let ctx = Arc::clone(&self.inner);
         into_py_future(py, async move {
             ctx.resume().await;
             Ok(())
@@ -997,7 +1021,7 @@ impl AudioContext {
     }
 
     pub(crate) fn suspend<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let ctx = Arc::clone(&self.0);
+        let ctx = Arc::clone(&self.inner);
         into_py_future(py, async move {
             ctx.suspend().await;
             Ok(())
@@ -1005,7 +1029,7 @@ impl AudioContext {
     }
 
     pub(crate) fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let ctx = Arc::clone(&self.0);
+        let ctx = Arc::clone(&self.inner);
         into_py_future(py, async move {
             ctx.close().await;
             Ok(())
@@ -1018,7 +1042,7 @@ impl AudioContext {
         py: Python<'_>,
         media_element: PyRef<'_, MediaElement>,
     ) -> PyResult<Py<MediaElementAudioSourceNode>> {
-        media_element_audio_source_node_py(py, self.0.as_ref(), &media_element)
+        media_element_audio_source_node_py(py, self.inner.as_ref(), &media_element)
     }
 
     #[pyo3(name = "createMediaStreamSource")]
@@ -1027,7 +1051,7 @@ impl AudioContext {
         py: Python<'_>,
         media_stream: PyRef<'_, MediaStream>,
     ) -> PyResult<Py<MediaStreamAudioSourceNode>> {
-        media_stream_audio_source_node_py(py, self.0.as_ref(), &media_stream.0)
+        media_stream_audio_source_node_py(py, self.inner.as_ref(), &media_stream.0)
     }
 
     #[pyo3(name = "createMediaStreamTrackSource")]
@@ -1036,7 +1060,7 @@ impl AudioContext {
         py: Python<'_>,
         media_stream_track: PyRef<'_, MediaStreamTrack>,
     ) -> PyResult<Py<MediaStreamTrackAudioSourceNode>> {
-        media_stream_track_audio_source_node_py(py, self.0.as_ref(), &media_stream_track.0)
+        media_stream_track_audio_source_node_py(py, self.inner.as_ref(), &media_stream_track.0)
     }
 
     #[pyo3(name = "createMediaStreamDestination")]
@@ -1044,20 +1068,24 @@ impl AudioContext {
         &self,
         py: Python<'_>,
     ) -> PyResult<Py<MediaStreamAudioDestinationNode>> {
-        media_stream_audio_destination_node_py(py, self.0.as_ref())
+        media_stream_audio_destination_node_py(py, self.inner.as_ref())
     }
 
     #[new]
     #[pyo3(signature = (options=None))]
     pub(crate) fn new(options: Option<&Bound<'_, PyAny>>) -> PyResult<PyClassInitializer<Self>> {
         let options = audio_context_options(options)?;
-        let ctx = catch_web_audio_panic_result(|| Arc::new(new_realtime_context(options)))?;
+        let ctx = Arc::new(new_realtime_context(options)?);
         let render_capacity_registry = Arc::new(Mutex::new(EventTargetRegistry::default()));
         Ok(PyClassInitializer::from(EventTarget::new())
             .add_subclass(BaseAudioContext::new(BaseAudioContextInner::Realtime(
                 Arc::clone(&ctx),
             )))
-            .add_subclass(Self(ctx, render_capacity_registry)))
+            .add_subclass(Self {
+                inner: ctx,
+                render_capacity_registry,
+                playback_stats: Mutex::new(None),
+            }))
     }
 }
 
@@ -1092,6 +1120,56 @@ impl AudioRenderCapacity {
 
     pub(crate) fn stop(&self) {
         self.inner.stop();
+    }
+}
+
+#[pymethods]
+impl AudioPlaybackStats {
+    #[getter(underrunDuration)]
+    pub(crate) fn underrun_duration(&self) -> f64 {
+        self.inner.underrun_duration()
+    }
+
+    #[getter(underrunEvents)]
+    pub(crate) fn underrun_events(&self) -> u64 {
+        self.inner.underrun_events()
+    }
+
+    #[getter(totalDuration)]
+    pub(crate) fn total_duration(&self) -> f64 {
+        self.inner.total_duration()
+    }
+
+    #[getter(averageLatency)]
+    pub(crate) fn average_latency(&self) -> f64 {
+        self.inner.average_latency()
+    }
+
+    #[getter(minimumLatency)]
+    pub(crate) fn minimum_latency(&self) -> f64 {
+        self.inner.minimum_latency()
+    }
+
+    #[getter(maximumLatency)]
+    pub(crate) fn maximum_latency(&self) -> f64 {
+        self.inner.maximum_latency()
+    }
+
+    #[pyo3(name = "resetLatency")]
+    pub(crate) fn reset_latency(&self) {
+        self.inner.reset_latency();
+    }
+
+    #[pyo3(name = "toJSON")]
+    pub(crate) fn to_json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        dict.set_item("underrunDuration", self.underrun_duration())?;
+        dict.set_item("underrunEvents", self.underrun_events())?;
+        dict.set_item("totalDuration", self.total_duration())?;
+        dict.set_item("averageLatency", self.average_latency())?;
+        dict.set_item("minimumLatency", self.minimum_latency())?;
+        dict.set_item("maximumLatency", self.maximum_latency())?;
+        Ok(dict)
     }
 }
 

@@ -92,6 +92,7 @@ fn web_audio_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<OfflineAudioContext>()?;
     m.add_class::<AudioRenderCapacity>()?;
     m.add_class::<AudioRenderCapacityEvent>()?;
+    m.add_class::<AudioPlaybackStats>()?;
     m.add_class::<OfflineAudioCompletionEvent>()?;
     m.add_class::<AudioProcessingEvent>()?;
     m.add_class::<AudioBuffer>()?;
@@ -162,12 +163,13 @@ mod tests {
     }
 
     fn audio_context_parts() -> (AudioContext, BaseAudioContext) {
-        let ctx = Arc::new(new_realtime_context(silent_audio_context_options()));
+        let ctx = Arc::new(new_realtime_context(silent_audio_context_options()).unwrap());
         (
-            AudioContext(
-                Arc::clone(&ctx),
-                Arc::new(Mutex::new(EventTargetRegistry::default())),
-            ),
+            AudioContext {
+                inner: Arc::clone(&ctx),
+                render_capacity_registry: Arc::new(Mutex::new(EventTargetRegistry::default())),
+                playback_stats: Mutex::new(None),
+            },
             BaseAudioContext::new(BaseAudioContextInner::Realtime(ctx)),
         )
     }
@@ -253,7 +255,7 @@ mod tests {
             Ok(buffer),
         ]);
         let stream = web_audio_api_rs::media_streams::MediaStream::from_tracks(vec![track]);
-        let (_src, node) = media_stream_audio_source_node_parts(&ctx.0, &stream);
+        let (_src, node) = media_stream_audio_source_node_parts(&ctx.inner, &stream);
 
         assert_eq!(node.number_of_inputs().unwrap(), 0);
         assert_eq!(node.number_of_outputs().unwrap(), 1);
@@ -271,7 +273,7 @@ mod tests {
             Ok(buffer.clone()),
             Ok(buffer),
         ]);
-        let (_src, node) = media_stream_track_audio_source_node_parts(&ctx.0, &track);
+        let (_src, node) = media_stream_track_audio_source_node_parts(&ctx.inner, &track);
 
         assert_eq!(node.number_of_inputs().unwrap(), 0);
         assert_eq!(node.number_of_outputs().unwrap(), 1);
@@ -280,7 +282,7 @@ mod tests {
     #[test]
     fn media_stream_audio_destination_graph_smoke_test() {
         let (ctx, _) = audio_context_parts();
-        let (dest, node) = media_stream_audio_destination_node_parts(&ctx.0);
+        let (dest, node) = media_stream_audio_destination_node_parts(&ctx.inner);
 
         assert_eq!(node.number_of_inputs().unwrap(), 1);
         assert_eq!(node.number_of_outputs().unwrap(), 0);
@@ -294,7 +296,8 @@ mod tests {
         let media_element = MediaElement(Arc::new(Mutex::new(
             web_audio_api_rs::MediaElement::new(&path).unwrap(),
         )));
-        let (_src, node) = media_element_audio_source_node_parts(&ctx.0, &media_element).unwrap();
+        let (_src, node) =
+            media_element_audio_source_node_parts(&ctx.inner, &media_element).unwrap();
 
         assert_eq!(node.number_of_inputs().unwrap(), 0);
         assert_eq!(node.number_of_outputs().unwrap(), 1);
@@ -305,7 +308,7 @@ mod tests {
     #[test]
     fn audio_render_capacity_smoke_test() {
         let (ctx, _) = audio_context_parts();
-        let render_capacity = ctx.0.render_capacity();
+        let render_capacity = ctx.inner.render_capacity();
         let (send, recv) = mpsc::channel();
 
         render_capacity.set_onupdate(move |event| {
@@ -314,11 +317,11 @@ mod tests {
         render_capacity.start(web_audio_api_rs::AudioRenderCapacityOptions {
             update_interval: 0.05,
         });
-        ctx.0.resume_sync();
+        ctx.inner.resume_sync();
 
         let event = recv.recv_timeout(Duration::from_secs(1)).unwrap();
         render_capacity.stop();
-        ctx.0.close_sync();
+        ctx.inner.close_sync();
 
         assert!(event.0 >= 0.0);
         assert!(event.1 >= 0.0);

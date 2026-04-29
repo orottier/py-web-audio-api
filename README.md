@@ -25,6 +25,9 @@ osc.connect(ctx.destination)
 osc.start()
 ```
 
+For realtime output diagnostics, `AudioContext.playbackStats` exposes underrun and
+latency metrics as a live Web Audio-style surface.
+
 ## Examples
 
 Runnable example scripts live in [examples](./examples):
@@ -39,6 +42,7 @@ Runnable example scripts live in [examples](./examples):
 - [examples/recorder.py](./examples/recorder.py): record graph output to a WAV file
 - [examples/stream_in.py](./examples/stream_in.py): stream Python-generated chunks into a `MediaStreamAudioSourceNode`
 - [examples/stream_out.py](./examples/stream_out.py): read graph output back into Python from a `MediaStreamAudioDestinationNode`
+- [examples/playback_stats.py](./examples/playback_stats.py): `AudioContext.playbackStats` and `renderCapacity` demo that intentionally stalls a worklet processor
 - [examples/vu_meter.py](./examples/vu_meter.py): CLI worklet-based VU meter driven by processor port messages
 
 Run an example after `maturin develop` (see Local Development section)
@@ -59,7 +63,7 @@ import web_audio_api
 
 
 async def main():
-    ctx = web_audio_api.OfflineAudioContext(1, 2_000, 2_000.0)
+    ctx = web_audio_api.OfflineAudioContext(1, 3_000, 3_000.0)
     src = ctx.createConstantSource()
     src.offset.value = 0.25
     src.connect(ctx.destination)
@@ -193,7 +197,7 @@ Update the version in `Cargo.toml`.
 Create and push a tag matching the release version; this uploads the artifacts to PyPI.
 
 ```bash
-git tag v0.3.1
+git tag v0.5.0
 git push origin main
-git push origin v0.3.1
+git push origin v0.5.0
 ```
